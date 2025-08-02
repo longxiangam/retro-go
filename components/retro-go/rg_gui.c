@@ -277,15 +277,40 @@ static size_t get_glyph(uint32_t *output, const rg_font_t *font, int points, int
     if (points <= 0)
         points = font->height;
 
+
     const uint8_t *ptr = font->data;
     const rg_font_glyph_t *glyph = (rg_font_glyph_t *)ptr;
-    // for (size_t i = 0; i < font->chars && glyph->code && glyph->code != c; ++i)
-    while (glyph->code && glyph->code != c)
+    if(font->type == 2){
+
+        if (c <= 255)
+        {
+            int times =0;
+            while (glyph->code && glyph->code != c && times++ <=255)
+            {
+                if (glyph->width != 0)
+                    ptr += (((glyph->width * glyph->height) - 1) / 8) + 1;
+                ptr += sizeof(rg_font_glyph_t);
+                glyph = (rg_font_glyph_t *)ptr;
+            }
+        }else if(c >= font->map_start_code){
+            uint32_t map_index =  c - font->map_start_code;
+            if (map_index < font->map_len)
+            {
+                uint32_t data_index = font->map[map_index];
+                glyph = (rg_font_glyph_t *)(ptr + data_index);
+            }
+        }
+    }
+    else
     {
-        if (glyph->width != 0)
-            ptr += (((glyph->width * glyph->height) - 1) / 8) + 1;
-        ptr += sizeof(rg_font_glyph_t);
-        glyph = (rg_font_glyph_t *)ptr;
+        // for (size_t i = 0; i < font->chars && glyph->code && glyph->code != c; ++i)
+        while (glyph->code && glyph->code != c)
+        {
+            if (glyph->width != 0)
+                ptr += (((glyph->width * glyph->height) - 1) / 8) + 1;
+            ptr += sizeof(rg_font_glyph_t);
+            glyph = (rg_font_glyph_t *)ptr;
+        }
     }
 
     if (glyph && glyph->code == c) // Glyph found

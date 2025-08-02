@@ -18,20 +18,8 @@
 #include "targets/esplay-s3/config.h"
 #elif defined(RG_TARGET_ESP32S3_DEVKIT_C)
 #include "targets/esp32s3-devkit-c/config.h"
-#elif defined(RG_TARGET_FRI3D_2024)
-#include "targets/fri3d-2024/config.h"
-#elif defined(RG_TARGET_BYTEBOI_REV1)
-#include "targets/byteboi-rev1/config.h"
-#elif defined(RG_TARGET_RACHEL_ESP32)
-#include "targets/rachel-esp32/config.h"
-#elif defined(RG_TARGET_NULLNANO)
-#include "targets/nullnano/config.h"
-#elif defined(RG_TARGET_T_DECK_PLUS)
-#include "targets/t-deck-plus/config.h"
-#elif defined(RG_TARGET_VMU)
-#include "targets/vmu/config.h"
-#elif defined(RG_TARGET_CROKPOCKET)
-#include "targets/crokpocket/config.h"
+#elif defined(RG_TARGET_C19)
+#include "targets/c19/config.h"
 #else
 #warning "No target defined. Defaulting to ODROID-GO."
 #include "targets/odroid-go/config.h"
@@ -85,7 +73,7 @@
 #endif
 
 #ifndef RG_UPDATER_ENABLE
-#define RG_UPDATER_ENABLE 1
+#define RG_UPDATER_ENABLE 0
 #endif
 
 // If either of the following isn't defined then the updater will only perform version *checks*, not self-update
@@ -112,8 +100,6 @@
 #define RG_BATTERY_CALC_VOLTAGE(raw) (0)
 #endif
 
-// These values are to prevent jitter, so that the battery icon doesn't flicker or
-// percent display doesn't oscillate between 77 and 78%, for example
 #ifndef RG_BATTERY_UPDATE_THRESHOLD
 #define RG_BATTERY_UPDATE_THRESHOLD 1.0f
 #endif

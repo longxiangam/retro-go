@@ -2,6 +2,7 @@ from PIL import Image, ImageDraw, ImageFont
 from tkinter import Tk, Label, Entry, StringVar, Button, Frame, Canvas, filedialog, ttk, Checkbutton, IntVar
 import os
 import re
+import uuid
 
 ################################ - Font format - ################################
 #
@@ -60,7 +61,7 @@ import re
 #   11111011
 #   11111111
 # ->01111100
-
+#
 # Next, we rearrange the bits :
 #    [ 7 bits wide]
 #       0111110
@@ -77,8 +78,9 @@ import re
 # And that's basically how characters are encoded using this tool
 
 # Example usage (defaults parameters)
-list_char_ranges_init = "32-126, 160-255"
-font_size_init = 11
+list_char_ranges_init = "32-126, 160-255,19968-40959"
+font_size_init = 12
+map_start_code_init = "19968"  # Default map start code
 
 font_path = ("arial.ttf")  # Replace with your TTF font path
 
@@ -90,13 +92,12 @@ def get_char_list():
     list_char = []
     for intervals in list_char_ranges.get().split(','):
         first = intervals.split('-')[0]
-        # we check if we the user input is a single char or an interval
+        # we check if the user input is a single char or an interval
         try:
             second = intervals.split('-')[1]
         except IndexError:
             list_char.append(int(first))
         else:
-            second = intervals.split('-')[1]
             for char in range(int(first), int(second) + 1):
                 list_char.append(char)
     return list_char
@@ -300,7 +301,7 @@ def generate_font_data():
                 bit_index %= 8
 
         if bounding_box:
-            canvas.create_rectangle((offset_x_1+offset_x)*p_size, (offset_y_1+offset_y)*p_size, (width+offset_x_1+offset_x)*p_size, (height+offset_y_1+offset_y)*p_size, width=1, outline="red", fill='') # bounding box
+            canvas.create_rectangle((offset_x_1+offset_x)*p_size, (offset_y_1+offset_y)*p_size, (width+offset_x_1+offset_x)*p_size, (height+offset_y_1+offset_y)*p_size, width=1, outline="red", fill='')
             canvas.create_rectangle((offset_x_1)*p_size, (offset_y_1)*p_size, (offset_x_1+adv_w)*p_size, (offset_y_1+max_height)*p_size, width=1, outline='blue', fill='')
 
         offset_x_1 += adv_w + 1
@@ -324,25 +325,58 @@ def save_font_data():
 def generate_c_font(font_name, font_size, font_data):
     normalized_name = f"{font_name.replace('-', '_').replace(' ', '')}{font_size}"
     max_height = max(font_size, max(g["ofs_y"] + g["box_h"] for g in font_data))
-    memory_usage = sum(len(g["bitmap"]) + 8 for g in font_data)
+    memory_usage = sum(len(g["bitmap"]) + 7 for g in font_data)  # 7 bytes for header
+
+    # Calculate map data if enabled
+    generate_map = generate_map_bool.get()
+    map_start_code = int(map_start_code_input.get()) if generate_map else 0
+    map_data = []
+    if generate_map:
+        # Find the range for the map
+        char_codes = [g["char_code"] for g in font_data]
+        max_char = max(char_codes)
+        map_size = max_char - map_start_code + 1
+        map_data = [0] * map_size  # Initialize with zeros
+        data_index = 0
+        for glyph in font_data:
+            map_index = glyph["char_code"] - map_start_code
+            if 0 <= map_index < map_size:
+                map_data[map_index] = data_index
+            data_index += 7 + len(glyph["bitmap"])  # 7 bytes header + bitmap size
+        memory_usage += map_size * 2  # Each map entry is 2 bytes (uint16_t)
 
     file_data = "#include \"../rg_gui.h\"\n\n"
     file_data += "// File generated with font_converter.py (https://github.com/ducalex/retro-go/tree/dev/tools)\n\n"
     file_data += f"// Font           : {font_name}\n"
     file_data += f"// Point Size     : {font_size}\n"
     file_data += f"// Memory usage   : {memory_usage} bytes\n"
-    file_data += f"// # characters   : {len(font_data)}\n\n"
+    file_data += f"// # characters   : {len(font_data)}\n"
+    if generate_map:
+        file_data += f"// Map start code : {map_start_code}\n"
+        file_data += f"// Map size       : {len(map_data)} entries\n"
+    file_data += "\n"
+    
+    if generate_map:
+        file_data += f"static const uint16_t font_{normalized_name}_map[] = {{\n"
+        for i in range(0, len(map_data), 8):
+            line = map_data[i:i+8]
+            file_data += "    " + ", ".join([f"0x{val:04X}" for val in line]) + ",\n"
+        file_data += "};\n\n"
+
     file_data += f"const rg_font_t font_{normalized_name} = {{\n"
     file_data += f"    .name = \"{font_name}\",\n"
     file_data += f"    .type = 1,\n"
     file_data += f"    .width = 0,\n"
     file_data += f"    .height = {max_height},\n"
     file_data += f"    .chars = {len(font_data)},\n"
+    if generate_map:
+        file_data += f"    .map_start = {map_start_code},\n"
+        file_data += f"    .map = font_{normalized_name}_map,\n"
     file_data += f"    .data = {{\n"
     for glyph in font_data:
         char_code = glyph['char_code']
         header_data = [char_code & 0xFF, char_code >> 8, glyph['ofs_y'], glyph['box_w'],
-                        glyph['box_h'], glyph['ofs_x'], glyph['adv_w']]
+                       glyph['box_h'], glyph['ofs_x'], glyph['adv_w']]
         file_data += f"        /* U+{char_code:04X} '{chr(char_code)}' */\n        "
         file_data += ", ".join([f"0x{byte:02X}" for byte in header_data])
         file_data += f",\n        "
@@ -402,7 +436,6 @@ def pan_canvas(event):
     start_x = event.x
     start_y = event.y
 
-
 if __name__ == "__main__":
     window = Tk()
     window.title("Retro-Go Font Converter")
@@ -442,6 +475,15 @@ if __name__ == "__main__":
     # Variable to hold the state of the checkbox
     bounding_box_bool = IntVar(value=1)  # 0 for unchecked, 1 for checked
     Checkbutton(frame, text="Bounding box", variable=bounding_box_bool).pack(side="left", padx=10)
+
+    # Variable to hold the state of the map generation checkbox
+    generate_map_bool = IntVar()  # 0 for unchecked, 1 for checked
+    Checkbutton(frame, text="Generate map", variable=generate_map_bool).pack(side="left", padx=5)
+
+    # Label and Entry for Map start code
+    Label(frame, text="Map start code").pack(side="left", padx=5)
+    map_start_code_input = StringVar(value=str(map_start_code_init))
+    Entry(frame, textvariable=map_start_code_input, width=6).pack(side="left", padx=5)
 
     # Button to launch the font generation function
     b1 = Button(frame, text="Preview", width=14, height=2, background="blue", foreground="white", command=generate_font_data)
