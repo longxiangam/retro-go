@@ -343,7 +343,7 @@ def generate_c_font(font_name, font_size, font_data):
             if 0 <= map_index < map_size:
                 map_data[map_index] = data_index
             data_index += 7 + len(glyph["bitmap"])  # 7 bytes header + bitmap size
-        memory_usage += map_size * 2  # Each map entry is 2 bytes (uint16_t)
+        memory_usage += map_size * 4  # Each map entry is 4 bytes (uint32_t)
 
     file_data = "#include \"../rg_gui.h\"\n\n"
     file_data += "// File generated with font_converter.py (https://github.com/ducalex/retro-go/tree/dev/tools)\n\n"
@@ -356,22 +356,25 @@ def generate_c_font(font_name, font_size, font_data):
         file_data += f"// Map size       : {len(map_data)} entries\n"
     file_data += "\n"
     
+    font_type = 1;
     if generate_map:
-        file_data += f"static const uint16_t font_{normalized_name}_map[] = {{\n"
+        file_data += f"static const uint32_t font_{normalized_name}_map[] = {{\n"
         for i in range(0, len(map_data), 8):
             line = map_data[i:i+8]
             file_data += "    " + ", ".join([f"0x{val:04X}" for val in line]) + ",\n"
         file_data += "};\n\n"
+        font_type = 2;
 
     file_data += f"const rg_font_t font_{normalized_name} = {{\n"
     file_data += f"    .name = \"{font_name}\",\n"
-    file_data += f"    .type = 1,\n"
+    file_data += f"    .type = {font_type},\n"
     file_data += f"    .width = 0,\n"
     file_data += f"    .height = {max_height},\n"
     file_data += f"    .chars = {len(font_data)},\n"
     if generate_map:
-        file_data += f"    .map_start = {map_start_code},\n"
+        file_data += f"    .map_start_code = {map_start_code},\n"
         file_data += f"    .map = font_{normalized_name}_map,\n"
+        file_data += f"    .map_len = sizeof(font_{normalized_name}_map) / 4,\n"
     file_data += f"    .data = {{\n"
     for glyph in font_data:
         char_code = glyph['char_code']

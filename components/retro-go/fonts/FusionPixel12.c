@@ -4,14 +4,12 @@
 
 // Font           : Fusion Pixel 12px M zh_hans Regular
 // Point Size     : 12
-// Memory usage   : 531490 bytes
+// Memory usage   : 573474 bytes
 // # characters   : 21183
 // Map start code : 19968
 // Map size       : 20992 entries
 
-
-
-static const uint32_t FusionPixel12px_map[] = {
+static const uint32_t font_FusionPixel12pxMzh_hansRegular12_map[] = {
     0x08EE, 0x08F7, 0x090E, 0x0925, 0x093C, 0x0953, 0x096A, 0x0981,
     0x0998, 0x09AF, 0x09C6, 0x09DD, 0x09F4, 0x0A0B, 0x0A22, 0x0A39,
     0x0A50, 0x0A67, 0x0A7E, 0x0A95, 0x0AAC, 0x0AC3, 0x0ADA, 0x0AF1,
@@ -2638,18 +2636,15 @@ static const uint32_t FusionPixel12px_map[] = {
     0x77764, 0x7777B, 0x77792, 0x777A9, 0x777C0, 0x777D7, 0x777F0, 0x77809,
 };
 
-
-
-
 const rg_font_t font_FusionPixel12 = {
-    .name = "FusionPixel12px",
+    .name = "FusionPixel12",
     .type = 2,
     .width = 0,
     .height = 12,
     .chars = 21183,
     .map_start_code = 19968,
-    .map = FusionPixel12px_map,
-    .map_len = sizeof(FusionPixel12px_map) / 4,
+    .map = font_FusionPixel12pxMzh_hansRegular12_map,
+    .map_len = sizeof(font_FusionPixel12pxMzh_hansRegular12_map) / 4,
     .data = {
         /* U+0020 ' ' */
         0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06,
@@ -66205,14 +66200,3 @@ const rg_font_t font_FusionPixel12 = {
         0x00, 0x00,
     },
 };
-
-
-
-
-
-
-
-
-
-
-
