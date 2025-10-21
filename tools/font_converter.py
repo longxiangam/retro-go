@@ -88,9 +88,11 @@ font_path = ("arial.ttf")  # Replace with your TTF font path
 start_x = 0
 start_y = 0
 
-def get_char_list():
+def get_char_list(ranges):
+    if isinstance(ranges, str):
+        ranges = ranges.replace(" ", "").split(',')
     list_char = []
-    for intervals in list_char_ranges.get().split(','):
+    for intervals in ranges:
         first = intervals.split('-')[0]
         # we check if the user input is a single char or an interval
         try:
@@ -100,7 +102,18 @@ def get_char_list():
         else:
             for char in range(int(first), int(second) + 1):
                 list_char.append(char)
-    return list_char
+    return sorted(set(list_char))
+
+def get_ranges_list(char_codes):
+    char_codes = sorted(set(char_codes))
+    ranges = []
+    start = char_codes[0]
+    for i in range(1, len(char_codes)):
+        if char_codes[i] != char_codes[i - 1] + 1:
+            ranges.append(f"{start}-{char_codes[i - 1]}" if start != char_codes[i - 1] else str(start))
+            start = char_codes[i]
+    ranges.append(f"{start}-{char_codes[-1]}" if start != char_codes[-1] else str(start))
+    return ranges
 
 def find_bounding_box(image):
     pixels = image.load()
@@ -128,7 +141,7 @@ def load_ttf_font(font_path, font_size):
     font_name = ' '.join(pil_font.getname())
     font_data = []
 
-    for char_code in get_char_list():
+    for char_code in get_char_list(list_char_ranges.get()):
         char = chr(char_code)
 
         image = Image.new("1", (font_size * 2, font_size * 2), 0) # generate mono bmp, 0 = black color
@@ -195,7 +208,7 @@ def load_ttf_font(font_path, font_size):
         font_data.append(glyph_data)
 
     # The font render glyphs at font_size but they can shift them up or down which will cause the max_height
-    # to exceed font_size. It's not desirable to remove the padding entirely (the "enforce" option above), 
+    # to exceed font_size. It's not desirable to remove the padding entirely (the "enforce" option above),
     # but there are some things we can do to reduce the discrepency without affecting the look.
     max_height = max(g["ofs_y"] + g["box_h"] for g in font_data)
     if max_height > font_size:
