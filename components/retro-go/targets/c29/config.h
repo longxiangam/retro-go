@@ -65,11 +65,11 @@
 #define RG_SCREEN_DRIVER            2   // 0 = ILI9341/ST7789
 #define RG_SCREEN_HOST              SPI3_HOST
 #define RG_SCREEN_SPEED             SPI_MASTER_FREQ_80M // SPI_MASTER_FREQ_40M
-#define RG_SCREEN_BACKLIGHT         0
-#define RG_SCREEN_WIDTH             480   
-#define RG_SCREEN_HEIGHT            640  
+#define RG_SCREEN_BACKLIGHT         1
+#define RG_SCREEN_WIDTH               640 
+#define RG_SCREEN_HEIGHT            480 
 
-#define RG_SCREEN_ROTATE            90   // 90度软件旋转
+#define RG_SCREEN_ROTATE            0   // 90度软件旋转
 #define RG_SCREEN_VISIBLE_AREA      {0, 0, 0, 0}  // Left, Top, Right, Bottom
 #define RG_SCREEN_SAFE_AREA         {0, 0, 0, 0}  // Left, Top, Right, Bottom
 #define RG_SCREEN_PARTIAL_UPDATES   1
@@ -115,6 +115,7 @@ ILI9341_CMD(0xE1, 0xD0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31, 0x54, 0x47, 0x0E, 0x
     {RG_KEY_SELECT, .num = GPIO_NUM_49, .pullup = 1, .level = 0},\
     {RG_KEY_START,  .num = GPIO_NUM_50, .pullup = 1, .level = 0},\
     {RG_KEY_MENU,   .num = GPIO_NUM_52, .pullup = 1, .level = 0},\
+    {RG_KEY_OPTION, .num = GPIO_NUM_51, .pullup = 1, .level = 0},\
     {RG_KEY_A,      .num = GPIO_NUM_32, .pullup = 1, .level = 0},\
     {RG_KEY_B,      .num = GPIO_NUM_33, .pullup = 1, .level = 0},\
     {RG_KEY_X,      .num = GPIO_NUM_34, .pullup = 1, .level = 0},\
@@ -127,11 +128,11 @@ ILI9341_CMD(0xE1, 0xD0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31, 0x54, 0x47, 0x0E, 0x
 /****************************************************************************
  * Battery                                                                  *
  ****************************************************************************/
- //#define RG_BATTERY_DRIVER            1   // 1 = ADC, 2 = MRGC
- //#define RG_BATTERY_ADC_UNIT          ADC_UNIT_1
- //#define RG_BATTERY_ADC_CHANNEL       ADC_CHANNEL_0
- //#define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 3500.f) / (4200.f - 3500.f) * 100.f)
- //#define RG_BATTERY_CALC_VOLTAGE(raw) ((raw) * 2.f * 0.001f)
+//  #define RG_BATTERY_DRIVER            1   // 1 = ADC, 2 = MRGC
+//  #define RG_BATTERY_ADC_UNIT          ADC_UNIT_1
+//  #define RG_BATTERY_ADC_CHANNEL       ADC_CHANNEL_0
+//  #define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 3500.f) / (4200.f - 3500.f) * 100.f)
+//  #define RG_BATTERY_CALC_VOLTAGE(raw) ((raw) * 2.f * 0.001f)
 
 
 /****************************************************************************
