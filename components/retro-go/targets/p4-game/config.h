@@ -6,7 +6,7 @@
 /****************************************************************************
  * Target definition for ESP32-P4 Dev-Board                                 *
  ****************************************************************************/
-#define RG_TARGET_NAME             "C29"
+#define RG_TARGET_NAME             "p4-game"
 
 
 /****************************************************************************
@@ -98,7 +98,7 @@ ILI9341_CMD(0xE1, 0xD0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31, 0x54, 0x47, 0x0E, 0x
 #define RG_GPIO_LCD_CLK             GPIO_NUM_23
 #define RG_GPIO_LCD_CS              GPIO_NUM_24
 #define RG_GPIO_LCD_DC              GPIO_NUM_25
-#define RG_GPIO_LCD_RST             GPIO_NUM_26
+#define RG_GPIO_LCD_RST             GPIO_NUM_17
 #define RG_GPIO_LCD_BCKL            GPIO_NUM_18
 // #define RG_GPIO_LCD_BCKL_INVERT  // Uncomment if the LED is active LOW
 
@@ -128,11 +128,11 @@ ILI9341_CMD(0xE1, 0xD0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31, 0x54, 0x47, 0x0E, 0x
 /****************************************************************************
  * Battery                                                                  *
  ****************************************************************************/
-//  #define RG_BATTERY_DRIVER            1   // 1 = ADC, 2 = MRGC
-//  #define RG_BATTERY_ADC_UNIT          ADC_UNIT_1
-//  #define RG_BATTERY_ADC_CHANNEL       ADC_CHANNEL_0
-//  #define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 3500.f) / (4200.f - 3500.f) * 100.f)
-//  #define RG_BATTERY_CALC_VOLTAGE(raw) ((raw) * 2.f * 0.001f)
+ #define RG_BATTERY_DRIVER            1   // 1 = ADC, 2 = MRGC
+ #define RG_BATTERY_ADC_UNIT          ADC_UNIT_1
+ #define RG_BATTERY_ADC_CHANNEL       ADC_CHANNEL_0
+ #define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 3500.f) / (4200.f - 3500.f) * 100.f)
+ #define RG_BATTERY_CALC_VOLTAGE(raw) ((raw) * 2.f * 0.001f)
 
 
 /****************************************************************************

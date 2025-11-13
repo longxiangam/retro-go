@@ -11,6 +11,7 @@ extern const rg_font_t font_DejaVu15;
 extern const rg_font_t font_VeraBold11;
 extern const rg_font_t font_VeraBold14;
 extern const rg_font_t font_FusionPixel12;
+extern const rg_font_t font_SourceHanSansCNLight20;
 
 enum {
     RG_FONT_BASIC_8,
@@ -21,6 +22,7 @@ enum {
     RG_FONT_VERA_11,
     RG_FONT_VERA_14,
     RG_FONT_FUSION_12,
+    RG_FONT_SANS_20,
     RG_FONT_MAX,
 };
 
@@ -32,5 +34,6 @@ static const rg_font_t *fonts[RG_FONT_MAX] = {
     &font_DejaVu15,
     &font_VeraBold11,
     &font_VeraBold14,
-    &font_FusionPixel12
+    &font_FusionPixel12,
+    &font_SourceHanSansCNLight20
 };

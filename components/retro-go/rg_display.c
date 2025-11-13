@@ -277,8 +277,11 @@ static inline void write_update_ppa(const rg_surface_t *update)
     }
 
     // 分配输出缓冲区（最大可能尺寸）
-    size_t out_size = ALIGN_UP(screen_width * screen_height, 32) * 2;
-    uint16_t *out_buf = heap_caps_aligned_calloc(32, out_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    size_t out_size = screen_width * screen_height * 2;
+    //uint16_t *out_buf = heap_caps_aligned_calloc(32, out_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+
+    uint16_t *out_buf = lcd_get_buffer_ppa();
+    //RG_LOGI("PPA OUT BUF: %p", out_buf);
     
     int out_width = 0;
     int out_height = 0;
@@ -290,14 +293,16 @@ static inline void write_update_ppa(const rg_surface_t *update)
     // 根据缩放模式调用相应的 PPA 函数
     switch (config.scaling) {
         case RG_DISPLAY_SCALING_OFF:
-            // 无缩放，仅旋转90度，居中显示
-            s_srm_ops_off(transfer_buf, out_buf, out_size, 
+            out_width =  RG_SCREEN_HEIGHT;
+            out_height =  RG_SCREEN_WIDTH;
+            display_left = 0;
+            display_top = 0;
+           
+            s_srm_ops_fit(transfer_buf, out_buf, out_size,
                           src_width, src_height,
-                          &out_width, &out_height);
-            // 居中显示（旋转后的坐标）
-            display_left = (screen_height - out_width) / 2;
-            display_top = (screen_width - out_height) / 2;
-            RG_LOGI("PPA OFF: src=%dx%d, out=%dx%d, pos=(%d,%d)\n", src_width, src_height, out_width, out_height, display_left, display_top);
+                          1.0f,
+                          viewport_top, viewport_left);
+         
             break;
             
         case RG_DISPLAY_SCALING_FIT:
@@ -307,23 +312,17 @@ static inline void write_update_ppa(const rg_surface_t *update)
             } else {
                 scale = scale_x;
             }
-            out_width =  viewport_height;
-            out_height =  viewport_width;
-            // viewport 已经计算了居中位置，但需要转换坐标（旋转90度）
-            display_left = viewport_top;
-            display_top = viewport_left;
-            // 保持宽高比缩放,旋转90度后输出宽度 = viewport_height，输出高度 = viewport_width
+            out_width =  RG_SCREEN_HEIGHT;
+            out_height =  RG_SCREEN_WIDTH;
+            display_left = 0;
+            display_top = 0;
             s_srm_ops_fit(transfer_buf, out_buf, out_size,
                           src_width, src_height,
                           scale,
-                          out_width, out_height);
-            
-            
+                          viewport_top, viewport_left);
             break;
             
         case RG_DISPLAY_SCALING_FULL:
-          
-            // 选择较长的缩放比例
           
             display_left = viewport_top;
             display_top = viewport_left;
@@ -336,21 +335,7 @@ static inline void write_update_ppa(const rg_surface_t *update)
                            out_width, out_height);
             break; 
             
-       /*  case RG_DISPLAY_SCALING_ZOOM:
-            // 自定义缩放
-            s_srm_ops_zoom(transfer_buf, out_buf, out_size,
-                           src_width, src_height,
-                           viewport_width, viewport_height,
-                           screen_width, screen_height,
-                           &out_width, &out_height);
-            // 居中显示
-            display_left = (screen_height - out_width) / 2;
-            display_top = (screen_width - out_height) / 2;
-            RG_LOGI("PPA ZOOM: src=%dx%d, viewport=%dx%d, out=%dx%d, pos=(%d,%d)\n",
-                    src_width, src_height, viewport_width, viewport_height,
-                    out_width, out_height, display_left, display_top);
-            break;  */
-            
+        case RG_DISPLAY_SCALING_ZOOM:
         default:
             // 选择较小的缩放比例
             if (scale_x > scale_y) {
@@ -358,16 +343,18 @@ static inline void write_update_ppa(const rg_surface_t *update)
             } else {
                 scale = scale_x;
             }
-            out_width =  viewport_height;
-            out_height =  viewport_width;
+            out_width =  RG_SCREEN_HEIGHT;
+            out_height =  RG_SCREEN_WIDTH;
             // viewport 已经计算了居中位置，但需要转换坐标（旋转90度）
-            display_left = viewport_top;
-            display_top = viewport_left;
+            display_left = 0;
+            display_top = 0;
+            //RG_LOGI("PPA FIT: src=%dx%d, out=%dx%d, pos=(%d,%d)\n", src_width, src_height, out_width, out_height, viewport_top, viewport_left);
             // 保持宽高比缩放,旋转90度后输出宽度 = viewport_height，输出高度 = viewport_width
             s_srm_ops_fit(transfer_buf, out_buf, out_size,
                           src_width, src_height,
                           scale,
-                          out_width, out_height);
+                          viewport_top, viewport_left);
+                       
             
             break;
     }
@@ -377,7 +364,7 @@ static inline void write_update_ppa(const rg_surface_t *update)
                         display_left + out_width, display_top + out_height);
     
     // 释放缓冲区
-    free(out_buf);
+    //free(out_buf);
     if(format & RG_PIXEL_PALETTE)
         free(transfer_buf);
     else if(format == RG_PIXEL_565_BE)
@@ -517,12 +504,13 @@ static void display_task(void *arg)
                 if (border)
                     rg_display_write_rect(0, 0, border->width, border->height, 0, border->data, RG_DISPLAY_WRITE_NOSYNC);
                 else 
-#if  RG_SCREEN_DRIVER  == 2 
-                    rg_display_clear(C_BLACK);
-#else
                     rg_display_clear_except(display.viewport.left, display.viewport.top, display.viewport.width, display.viewport.height, C_BLACK);
-#endif
             }
+#if  RG_SCREEN_DRIVER  == 2 
+            else{
+                    rg_display_clear(C_BLACK);
+            }
+#endif
             display.changed = false;
         }
 
@@ -607,7 +595,7 @@ display_filter_t rg_display_get_filter(void)
 void rg_display_set_rotation(display_rotation_t rotation)
 {
     config.rotation = RG_MIN(RG_MAX(0, rotation), RG_DISPLAY_ROTATION_COUNT - 1);
-    rg_settings_set_number(NS_APP, SETTING_SCALING, config.rotation);
+    rg_settings_set_number(NS_APP, SETTING_ROTATION, config.rotation);
     display.changed = true;
 }
 
@@ -684,17 +672,22 @@ void rg_display_write_rect_ppa(int left, int top, int width, int height, int str
 {
     RG_ASSERT_ARG(buffer);
     size_t out_size = ALIGN_UP(width * height, 32) * 2;
-    uint16_t *out_buf = heap_caps_aligned_calloc(32, out_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    
+   
+    //RG_LOGI("rg_display_write_rect: left: %d, top: %d, width: %d, height: %d, stride: %d", left, top, width, height, stride);
+
    
     if(width  == RG_SCREEN_WIDTH && height == RG_SCREEN_HEIGHT && stride == width*2){
+        uint16_t *out_buf = lcd_get_buffer_ppa();
         s_srm_ops( buffer,out_buf,out_size, width,height);
         lcd_send_buffer_ppa(out_buf, out_size, 0, 0, height, width);
         rg_task_delay(1);
-        free(out_buf);
         return;
-    }else{
-        s_srm_ops(buffer,out_buf,out_size, width,height);
     }
+
+    
+    uint16_t *out_buf = heap_caps_aligned_calloc(32, out_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    s_srm_ops(buffer,out_buf,out_size, width,height);
         
     buffer = out_buf;
     
@@ -702,8 +695,9 @@ void rg_display_write_rect_ppa(int left, int top, int width, int height, int str
     width = height;
     height = temp;
     int top_temp = top;
-    top = left;
+    top =  left;
     left = top_temp;
+    top =  display.screen.width  - top - height -1;
     // calc stride before clipping width
     stride = RG_MAX(stride, width * 2);
 
@@ -759,8 +753,11 @@ void rg_display_write_rect_ppa(int left, int top, int width, int height, int str
         
         
         lcd_send_buffer(lcd_buffer, width * num_lines);
+        rg_usleep(50);
         y += num_lines;
     }
+   
+    
 
     free(out_buf);
     lcd_sync();
@@ -773,10 +770,11 @@ void rg_display_clear_rect_ppa(int left, int top, int width, int height, uint16_
     
     if(width  == RG_SCREEN_WIDTH && height == RG_SCREEN_HEIGHT){
 
-        uint16_t *color_be_buf = heap_caps_aligned_calloc(32, pixels_remaining, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-        memset(color_be_buf, color_be, pixels_remaining * sizeof(uint16_t));
-        lcd_send_buffer_ppa(color_be_buf, pixels_remaining, 0, 0, height, width);
-        free(color_be_buf);
+        for( int i= 0; i < FB_NUM; i++){
+            uint16_t *color_be_buf = lcd_get_buffer_ppa();
+            memset(color_be_buf, color_be, pixels_remaining * sizeof(uint16_t));
+            lcd_send_buffer_ppa(color_be_buf, pixels_remaining, 0, 0, height, width);
+        }
         return;
     }
 

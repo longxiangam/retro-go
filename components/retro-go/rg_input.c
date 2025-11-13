@@ -15,7 +15,15 @@
 #include <SDL2/SDL.h>
 #endif
 
-#if RG_BATTERY_DRIVER == 1
+#if defined(RG_TARGET_P4_GAME) && RG_BATTERY_DRIVER == 1
+#include "esp_err.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+static adc_oneshot_unit_handle_t battery_adc_handle = NULL;
+static adc_cali_handle_t battery_adc_cali_handle = NULL;
+static bool battery_adc_calibrated = false;
+#elif RG_BATTERY_DRIVER == 1 && !defined(RG_TARGET_P4_GAME)
 #include <esp_adc_cal.h>
 static esp_adc_cal_characteristics_t adc_chars;
 #endif
@@ -66,13 +74,88 @@ static inline int adc_get_raw(adc_unit_t unit, adc_channel_t channel)
 }
 #endif
 
+#if defined(RG_TARGET_P4_GAME) && RG_BATTERY_DRIVER == 1
+static bool battery_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
+{
+    adc_cali_handle_t handle = NULL;
+    esp_err_t ret = ESP_FAIL;
+    bool calibrated = false;
+
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    if (!calibrated) {
+        adc_cali_curve_fitting_config_t cali_config = {
+            .unit_id = unit,
+            .chan = channel,
+            .atten = atten,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
+        if (ret == ESP_OK) {
+            calibrated = true;
+        }
+    }
+#endif
+
+#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    if (!calibrated) {
+        adc_cali_line_fitting_config_t cali_config = {
+            .unit_id = unit,
+            .atten = atten,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
+        if (ret == ESP_OK) {
+            calibrated = true;
+        }
+    }
+#endif
+
+    *out_handle = handle;
+    if (ret == ESP_OK) {
+        RG_LOGI("Battery ADC calibration success");
+    } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
+        RG_LOGW("eFuse not burnt, skip software calibration");
+    } else {
+        RG_LOGE("Invalid arg or no memory");
+    }
+    return calibrated;
+}
+
+static void battery_adc_calibration_deinit(adc_cali_handle_t handle)
+{
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
+#endif
+}
+#endif
+
 bool rg_input_read_battery_raw(rg_battery_t *out)
 {
     uint32_t raw_value = 0;
     bool present = true;
     bool charging = false;
 
-#if RG_BATTERY_DRIVER == 1 /* ADC */
+#if defined(RG_TARGET_P4_GAME) && RG_BATTERY_DRIVER == 1 /* ADC - New API */
+    if (!battery_adc_handle)
+        return false;
+    
+    int adc_raw = 0;
+    int voltage_mv = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        if (adc_oneshot_read(battery_adc_handle, RG_BATTERY_ADC_CHANNEL, &adc_raw) != ESP_OK)
+            return false;
+       
+        if (adc_cali_raw_to_voltage(battery_adc_cali_handle, adc_raw, &voltage_mv) != ESP_OK)
+            return false;
+        
+        raw_value += voltage_mv;
+    }
+    raw_value /= 4;
+    
+#elif RG_BATTERY_DRIVER == 1 /* ADC - Old API */
     for (int i = 0; i < 4; ++i)
     {
         int value = adc_get_raw(RG_BATTERY_ADC_UNIT, RG_BATTERY_ADC_CHANNEL);
@@ -335,7 +418,28 @@ void rg_input_init(void)
 #endif
 
 
-#if RG_BATTERY_DRIVER == 1 /* ADC */
+#if defined(RG_TARGET_P4_GAME) && RG_BATTERY_DRIVER == 1 /* ADC - New API */
+    RG_LOGI("Initializing ADC battery driver (new API)...");
+    // Initialize ADC oneshot unit
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = RG_BATTERY_ADC_UNIT,
+    };
+    if (RG_BATTERY_ADC_UNIT == ADC_UNIT_2)
+    {
+        init_config.ulp_mode = ADC_ULP_MODE_DISABLE;
+    }
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &battery_adc_handle));
+    
+    // Configure ADC channel
+    adc_oneshot_chan_cfg_t config = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(battery_adc_handle, RG_BATTERY_ADC_CHANNEL, &config));
+    
+    // Initialize calibration
+    battery_adc_calibrated = battery_adc_calibration_init(RG_BATTERY_ADC_UNIT, RG_BATTERY_ADC_CHANNEL, ADC_ATTEN_DB_12, &battery_adc_cali_handle);
+#elif RG_BATTERY_DRIVER == 1 /* ADC - Old API */
     RG_LOGI("Initializing ADC battery driver...");
     if (RG_BATTERY_ADC_UNIT == ADC_UNIT_1)
     {
@@ -369,6 +473,21 @@ void rg_input_deinit(void)
     input_task_running = false;
     // while (gamepad_state != -1)
     //     rg_task_yield();
+    
+/* #if defined(RG_TARGET_P4_GAME) && RG_BATTERY_DRIVER == 1
+    if (battery_adc_handle)
+    {
+        ESP_ERROR_CHECK(adc_oneshot_del_unit(battery_adc_handle));
+        battery_adc_handle = NULL;
+    }
+    if (battery_adc_cali_handle)
+    {
+        battery_adc_calibration_deinit(battery_adc_cali_handle);
+        battery_adc_cali_handle = NULL;
+    }
+    battery_adc_calibrated = false;
+#endif
+    */ 
     RG_LOGI("Input terminated.\n");
 }
 

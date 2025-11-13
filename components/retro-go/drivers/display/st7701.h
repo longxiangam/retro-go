@@ -96,11 +96,25 @@ static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL;
 static esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
 static SemaphoreHandle_t transfer_done_sem = NULL;
 static ppa_client_handle_t ppa_srm_handle = NULL;
-// 缓冲区队列
+
+
+/**
+ 关于 _ppa 的说明：
+ 游戏或全屏的显示都使用 s_srm_ops_ppa 函数 进行缩放和旋转，且out_buffer 直接使用dsi面板的frame buffer，这样不需要额外的内存分配和数据拷贝。
+ 菜单等文字界面使用 lcd_send_buffer 函数，out_buffer 使用heap_caps_aligned_calloc 分配内存
+ ，然后通过dma将数据发送到dsi面板的frame buffer，再通过dsi面板的dma将数据发送到显示屏。
+因为最开始是想基于 lcd_send_buffer 和 set_window 函数来实现缩放和旋转，但是发现复杂且效果不理想，所以增加了ppa的方式来处理全屏和游戏显示。
+*/
+
+// 缓冲区队列 绘制菜单等文字界面
 static QueueHandle_t lcd_buffers;
 #define LCD_BUFFER_COUNT 5
 static uint16_t *lcd_buffer_pool[LCD_BUFFER_COUNT];
 
+#define FB_NUM 2
+// ppa 输出缓冲区
+static uint16_t *fbs[FB_NUM];
+static int cur_fb_index = 0;
 // 存储当前窗口状态
 static struct {
     int left;
@@ -110,12 +124,6 @@ static struct {
     bool valid;
 } current_window = {0};
 
-// 旋转状态（暂时禁用）
-// static struct {
-//     int rotation;  // 0=0°, 1=90°, 2=180°, 3=270°
-//     int physical_width;   // 物理屏幕宽度 (480)
-//     int physical_height;  // 物理屏幕高度 (640)
-// } rotation_state = {0};
 
 // 传输完成回调
 static bool lcd_color_trans_done_cb(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
@@ -202,6 +210,7 @@ static void lcd_init(void)
 
     // 4. 配置 MIPI DPI 面板 (用于发送像素数据)
     esp_lcd_dpi_panel_config_t dpi_config = {
+        .num_fbs = FB_NUM, 
         .virtual_channel = 0,
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = RG_MIPI_DSI_DPI_CLK_MHZ,
@@ -248,6 +257,7 @@ static void lcd_init(void)
     // 6. 注册回调
     esp_lcd_dpi_panel_event_callbacks_t cbs = {
         .on_color_trans_done = lcd_color_trans_done_cb,
+        .on_refresh_done = lcd_color_trans_done_cb
     };
     ret = esp_lcd_dpi_panel_register_event_callbacks(mipi_dpi_panel, &cbs, NULL);
     RG_ASSERT(ret == ESP_OK, "Failed to register panel callbacks");
@@ -273,6 +283,14 @@ static void lcd_init(void)
     ret = ppa_register_client(&ppa_srm_config, &ppa_srm_handle);
     RG_ASSERT(ret == ESP_OK, "Failed to register PPA client");
     RG_LOGI("PPA client registered successfully\n");
+    
+  
+#if FB_NUM == 2
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(mipi_dpi_panel, 2, (void **)&fbs[0], (void **)&fbs[1])); 
+#else
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(mipi_dpi_panel, 1, (void **)&fbs[0])); 
+#endif
+
 
     RG_LOGI("ST7701 MIPI DSI LCD initialized successfully\n");
 }
@@ -335,7 +353,7 @@ static void lcd_set_backlight(float percent)
         RG_LOGI("backlight set to %d%%\n", (int)(100 * level));
 }
 
-// 原始的旋转操作
+// 原始的旋转操作（保留用于兼容）
 static void s_srm_ops(void *in_buf, void *out_buf, size_t buf_size,int width,int height)
 {
     ppa_srm_oper_config_t srm_config = {
@@ -365,53 +383,15 @@ static void s_srm_ops(void *in_buf, void *out_buf, size_t buf_size,int width,int
     ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
 }
 
-// OFF 模式：无缩放 + 90度旋转，居中显示
-// 输入：源图像 (src_w x src_h)
-// 输出：旋转后的图像，居中显示在屏幕上
-static void s_srm_ops_off(void *in_buf, void *out_buf, size_t buf_size, 
-                          int src_width, int src_height,
-                          int *out_width, int *out_height)
-{
-    // 旋转90度后，宽高互换
-    *out_width = src_height;
-    *out_height = src_width;
-    
-    ppa_srm_oper_config_t srm_config = {
-        .in.buffer = in_buf,
-        .in.pic_w = src_width,
-        .in.pic_h = src_height,
-        .in.block_w = src_width,
-        .in.block_h = src_height,
-        .in.block_offset_x = 0,
-        .in.block_offset_y = 0,
-        .in.srm_cm = PPA_SRM_COLOR_MODE_RGB565,
-        .out.buffer = out_buf,
-        .out.buffer_size = buf_size,
-        .out.pic_w = *out_width,
-        .out.pic_h = *out_height,
-        .out.block_offset_x = 0,
-        .out.block_offset_y = 0,
-        .out.srm_cm = PPA_SRM_COLOR_MODE_RGB565,
-        .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
-        .scale_x = 1.0f,
-        .scale_y = 1.0f,
-        .rgb_swap = 0,
-        .byte_swap = 0,
-        .mode = PPA_TRANS_MODE_BLOCKING,
-    };
-
-    ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
-}
-
 // FIT 模式：保持宽高比 + 90度旋转，适应屏幕（可能有黑边）
 // 物理屏幕是 480x640 (portrait)，但我们需要横屏显示，所以旋转90度
 static void s_srm_ops_fit(void *in_buf, void *out_buf, size_t buf_size, 
                           int src_width, int src_height,
                           float scale,
-                          int out_width, int out_height)
+                          int out_left, int out_top)
 {
     
-    
+    //memset(out_buf, 0, buf_size);
     // PPA 会根据输入输出尺寸自动计算缩放比例
     // 旋转90度：输出w对应输入h，输出h对应输入w
     ppa_srm_oper_config_t srm_config = {
@@ -425,10 +405,10 @@ static void s_srm_ops_fit(void *in_buf, void *out_buf, size_t buf_size,
         .in.srm_cm = PPA_SRM_COLOR_MODE_RGB565,
         .out.buffer = out_buf,
         .out.buffer_size = buf_size,
-        .out.pic_w = out_width,
-        .out.pic_h = out_height,
-        .out.block_offset_x = 0,
-        .out.block_offset_y = 0,
+        .out.pic_w = RG_SCREEN_HEIGHT,
+        .out.pic_h = RG_SCREEN_WIDTH,
+        .out.block_offset_x = out_left,
+        .out.block_offset_y = out_top,
         .out.srm_cm = PPA_SRM_COLOR_MODE_RGB565,
         .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
         .scale_x = scale,
@@ -475,74 +455,6 @@ static void s_srm_ops_full(void *in_buf, void *out_buf, size_t buf_size,
 
     ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
 }
-
-// ZOOM 模式：自定义缩放 + 90度旋转 + 裁剪（保持宽高比）
-static void s_srm_ops_zoom(void *in_buf, void *out_buf, size_t buf_size, 
-                           int src_width, int src_height,
-                           int viewport_width, int viewport_height,
-                           int screen_width, int screen_height,
-                           int *out_width, int *out_height)
-{
-    // viewport 可能超出屏幕范围，需要裁剪
-    // 旋转90度后的物理输出尺寸
-    *out_width = RG_MIN(viewport_height, screen_height);
-    *out_height = RG_MIN(viewport_width, screen_width);
-    
-    // 计算需要从源图像裁剪的区域
-    // 注意：旋转90度，viewport_height 对应 src_width，viewport_width 对应 src_height
-    float scale_before_rot_x = (float)viewport_height / src_width;
-    float scale_before_rot_y = (float)viewport_width / src_height;
-    
-    // 如果 viewport 超出屏幕，需要裁剪源图像
-    int block_w = src_width;
-    int block_h = src_height;
-    int offset_x = 0;
-    int offset_y = 0;
-    
-    if (viewport_height > screen_height) {
-        // 需要裁剪宽度（对应源图像的宽度）
-        block_w = (int)((float)screen_height / scale_before_rot_x);
-        offset_x = (src_width - block_w) / 2;
-    }
-    if (viewport_width > screen_width) {
-        // 需要裁剪高度（对应源图像的高度）
-        block_h = (int)((float)screen_width / scale_before_rot_y);
-        offset_y = (src_height - block_h) / 2;
-    }
-    
-    // 旋转90度后的实际缩放比例：
-    // out_width 来自 block_h（输入的高度块）
-    // out_height 来自 block_w（输入的宽度块）
-    float actual_scale_x = (float)(*out_width) / block_h;
-    float actual_scale_y = (float)(*out_height) / block_w;
-    
-    ppa_srm_oper_config_t srm_config = {
-        .in.buffer = in_buf,
-        .in.pic_w = src_width,
-        .in.pic_h = src_height,
-        .in.block_w = block_w,
-        .in.block_h = block_h,
-        .in.block_offset_x = offset_x,
-        .in.block_offset_y = offset_y,
-        .in.srm_cm = PPA_SRM_COLOR_MODE_RGB565,
-        .out.buffer = out_buf,
-        .out.buffer_size = buf_size,
-        .out.pic_w = *out_width,
-        .out.pic_h = *out_height,
-        .out.block_offset_x = 0,
-        .out.block_offset_y = 0,
-        .out.srm_cm = PPA_SRM_COLOR_MODE_RGB565,
-        .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
-        .scale_x = actual_scale_x,
-        .scale_y = actual_scale_y,
-        .rgb_swap = 0,
-        .byte_swap = 0,
-        .mode = PPA_TRANS_MODE_BLOCKING,
-    };
-
-    ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
-}
-
 
 static inline uint16_t *lcd_get_buffer(size_t length)
 {
@@ -609,12 +521,17 @@ static inline void lcd_send_buffer(uint16_t *buffer, size_t length)
     
 }
 
+static inline uint16_t *lcd_get_buffer_ppa()
+{
+  
+   cur_fb_index = (cur_fb_index + 1) % FB_NUM;
+   return fbs[cur_fb_index]; 
+
+}
+
 static inline void lcd_send_buffer_ppa(uint16_t *buffer, size_t length, int left, int top, int width, int height)
 {
 
-     
-   
-    // 发送数据到面板（注意：draw_bitmap 使用 x_end+1, y_end+1）
     esp_err_t ret = esp_lcd_panel_draw_bitmap(mipi_dpi_panel, 
                                                left, top, 
                                                width, height, 
@@ -630,11 +547,11 @@ static inline void lcd_send_buffer_ppa(uint16_t *buffer, size_t length, int left
 static void lcd_sync(void)
 {
     // 等待传输完成
-   /*  if (transfer_done_sem) {
+    if (transfer_done_sem) {
         //RG_LOGE("wait transfer done semaphore");
         xSemaphoreTake(transfer_done_sem, portMAX_DELAY);
         //RG_LOGE("transfer done semaphore taken");
-    }  */
+    }  
 }
 
 static void lcd_set_rotation(int rotation)
