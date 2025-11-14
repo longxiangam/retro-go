@@ -370,33 +370,28 @@ static inline void write_update_ppa(const rg_surface_t *update)
     else if(format == RG_PIXEL_565_BE)
         free(transfer_buf);
 
- 
-    int lines_per_buffer = LCD_BUFFER_LENGTH / draw_width;
+
+    //下面这部分删除就报错，但没啥用，换成延时也不行，不懂为什么
+    int lines_per_buffer = 480;//LCD_BUFFER_LENGTH / draw_width;
     int lines_remaining = draw_height;
-    int i=0;
     for (int y = 0; y < draw_height;)
     {
         int lines_to_copy = RG_MIN(lines_per_buffer, lines_remaining);
-
         if (lines_to_copy < 1){
             break;
         }
-
-        // The vertical filter requires a block to start and end with unscaled lines
+        //这个分支从不进入，但是删除也不行，不懂为什么
         if (filter_y)
         { 
             while (lines_to_copy > 1 && (LINE_IS_REPEATED(y + lines_to_copy - 1) ||
                                          LINE_IS_REPEATED(y + lines_to_copy))){
                 --lines_to_copy;
-                i++;
-                                         }
-        }  
-
- 
+            } 
+        }   
         lines_remaining -= lines_to_copy;
-        y += lines_to_copy;  // ← 添加这一行！
+        y += lines_to_copy; 
     }
-  
+
 
 
     counters.fullFrames++;
@@ -498,6 +493,9 @@ static void display_task(void *arg)
         if (display.changed)
         {
             update_viewport_scaling();
+#if  RG_SCREEN_DRIVER  == 2 
+            rg_display_clear(C_BLACK);
+#endif
             // Clear the screen if the viewport doesn't cover the entire screen because garbage could remain on the sides
             if (display.viewport.width < display.screen.width || display.viewport.height < display.screen.height)
             {
@@ -506,11 +504,7 @@ static void display_task(void *arg)
                 else 
                     rg_display_clear_except(display.viewport.left, display.viewport.top, display.viewport.width, display.viewport.height, C_BLACK);
             }
-#if  RG_SCREEN_DRIVER  == 2 
-            else{
-                    rg_display_clear(C_BLACK);
-            }
-#endif
+
             display.changed = false;
         }
 
