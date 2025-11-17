@@ -26,10 +26,13 @@
 #include "targets/vmu/config.h"
 #elif defined(RG_TARGET_CROKPOCKET)
 #include "targets/crokpocket/config.h"
+#elif defined(RG_TARGET_C19)
+#include "targets/c19/config.h"
 #elif defined(RG_TARGET_ESP32_P4)
 #include "targets/esp32-p4/config.h"
 #elif defined(RG_TARGET_P4_GAME)
 #include "targets/p4-game/config.h"
+
 #else
 #warning "No target defined. Defaulting to ODROID-GO."
 #include "targets/odroid-go/config.h"
@@ -83,7 +86,7 @@
 #endif
 
 #ifndef RG_UPDATER_ENABLE
-#define RG_UPDATER_ENABLE 1
+#define RG_UPDATER_ENABLE 0
 #endif
 
 // If either of the following isn't defined then the updater will only perform version *checks*, not self-update
@@ -110,8 +113,6 @@
 #define RG_BATTERY_CALC_VOLTAGE(raw) (0)
 #endif
 
-// These values are to prevent jitter, so that the battery icon doesn't flicker or
-// percent display doesn't oscillate between 77 and 78%, for example
 #ifndef RG_BATTERY_UPDATE_THRESHOLD
 #define RG_BATTERY_UPDATE_THRESHOLD 1.0f
 #endif
