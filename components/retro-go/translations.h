@@ -885,7 +885,7 @@ static const char *translations[][RG_LANG_MAX] =
         [RG_LANG_EN] = "None",
         [RG_LANG_FR] = "Aucun",
         [RG_LANG_DE] = "Keine",
-        [RG_LANG_Z  = "无",
+        [RG_LANG_ZH]  = "无",
     },
     {
         [RG_LANG_EN] = "Cover,Save",
@@ -1013,8 +1013,6 @@ static const char *translations[][RG_LANG_MAX] =
     },
     // message when no rom
     {
-        [
-
         [RG_LANG_EN] = "Welcome to Retro-Go!",
         [RG_LANG_FR] = "Bienvenue sur Retro-Go!",
         [RG_LANG_DE] = "Willkommen bei Retro-Go!",
