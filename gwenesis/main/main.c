@@ -314,7 +314,7 @@ void app_main(void)
     }
 
     rg_system_set_tick_rate(60);
-    app->frameskip = 2;
+    app->frameskip = 0;
 
     extern unsigned char gwenesis_vdp_regs[0x20];
     extern unsigned int gwenesis_vdp_status;
@@ -322,7 +322,21 @@ void app_main(void)
     extern unsigned int screen_width, screen_height;
     extern int hint_pending;
 
-    uint32_t keymap[8] = {RG_KEY_UP, RG_KEY_DOWN, RG_KEY_LEFT, RG_KEY_RIGHT, RG_KEY_A, RG_KEY_B, RG_KEY_SELECT, RG_KEY_START};
+    // 6-button controller mapping: bit 0-3=UDLR, bit 4-7=C/B/A/Start, bit 8-11=X/Y/Z/MODE
+    uint32_t keymap[12] = {
+        RG_KEY_UP,       // [0]  Up
+        RG_KEY_DOWN,     // [1]  Down
+        RG_KEY_LEFT,     // [2]  Left
+        RG_KEY_RIGHT,    // [3]  Right
+        RG_KEY_SELECT,   // [4]  C button
+        RG_KEY_B,        // [5]  B button
+        RG_KEY_A,        // [6]  A button
+        RG_KEY_START,    // [7]  Start
+        RG_KEY_X,        // [8]  X button
+        RG_KEY_Y,        // [9]  Y button
+        0,               // [10] Z button (unmapped)
+        0                // [11] MODE button (unmapped)
+    };
     uint32_t joystick = 0, joystick_old;
 
     int skipFrames = 0;
@@ -342,11 +356,11 @@ void app_main(void)
         }
         else if (joystick != joystick_old)
         {
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < 12; i++)
             {
-                if ((joystick & keymap[i]) == keymap[i])
+                if (keymap[i] && (joystick & keymap[i]) == keymap[i])
                     gwenesis_io_pad_press_button(0, i);
-                else
+                else if (keymap[i])
                     gwenesis_io_pad_release_button(0, i);
             }
         }
@@ -367,6 +381,7 @@ void app_main(void)
         /* Reset the difference clocks and audio index */
         system_clock = 0;
         zclk = z80_enabled ? 0 : 0x1000000;
+        gwenesis_io_new_frame();
 
         ym2612_clock = yfm_enabled ? 0 : 0x1000000;
         ym2612_index = 0;

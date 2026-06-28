@@ -137,7 +137,7 @@ void gw_main(void)
     };
 
     app = rg_system_reinit(AUDIO_SAMPLE_RATE, &handlers, NULL);
-
+    app->frameskip = 0;
     updates[0] = rg_surface_create(GW_SCREEN_WIDTH, GW_SCREEN_HEIGHT, RG_PIXEL_565_LE, MEM_FAST);
     currentUpdate = updates[0];
 

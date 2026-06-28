@@ -22,12 +22,15 @@ __license__ = "GPLv3"
 #include "gwenesis_io.h"
 #include "gwenesis_savestate.h"
 
-unsigned char button_state[3]= {0xff,0xff,0xff};
-
-/* Button mapping 
-    7 6 5 4 3 2 1 0
-Start A B C R L D U 
-*/
+/*
+ * Button mapping (6-button controller support)
+ * Low byte (0-7): 3-button compatible
+ * High byte (8-15): Extended 6-button buttons
+ *
+ *  15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+ *  -   -   -   - MODE  Z   Y   X Start  A   B   C   R   L   D   U
+ */
+uint16_t button_state[3] = {0xFFFF, 0xFFFF, 0xFFFF};
 static unsigned char gwenesis_io_pad_state[3] = {0x33,0x33,0x33};
 
 #define GWENESIS_IO_VERSION 0x81 /* oversea NTSC model version 81 */
@@ -152,24 +155,56 @@ static inline void gwenesis_io_pad_write(int pad, int value)
  
 }
 
-static inline  unsigned char gwenesis_io_pad_read(int pad)
+static int th_pulse_count[3] = {0, 0, 0};
+
+void gwenesis_io_new_frame(void)
+{
+    th_pulse_count[0] = 0;
+    th_pulse_count[1] = 0;
+    th_pulse_count[2] = 0;
+}
+
+static inline unsigned char gwenesis_io_pad_read(int pad)
 {
     unsigned char value;
- 
-    /* get host button */
-    gwenesis_io_get_buttons();
+    uint16_t buttons = button_state[pad];
+    int pulse = th_pulse_count[pad];
 
     value = gwenesis_io_pad_state[pad] & 0x40;
     value |= 0x3f;
 
-    if (value & 0x40)
+    if (value & 0x40)  // TH = HIGH
     {
-        value &= (button_state[pad] & 0x3f);
+        if (pulse == 3)
+        {
+            // 6-button 3rd pulse HIGH: D0=Z, D1=Y, D2=X, D3=MODE, D4=B, D5=C
+            value &= ~0x0F;
+            if (buttons & (1 << 10)) value |= (1 << 0);
+            if (buttons & (1 << 9))  value |= (1 << 1);
+            if (buttons & (1 << 8))  value |= (1 << 2);
+            if (buttons & (1 << 11)) value |= (1 << 3);
+            if (buttons & (1 << 5)) value |= (1 << 4);
+            if (buttons & (1 << 4)) value |= (1 << 5);
+        }
+        else
+        {
+            value &= (buttons & 0x3f);
+        }
     }
-    else
+    else  // TH = LOW
     {
-        value &= ((button_state[pad] & 3) | ((button_state[pad] >> 2) & 0x30));
+        if (pulse == 3)
+        {
+            value &= ~0x0F;
+            if (buttons & (1 << 7)) value |= (1 << 5);
+            if (buttons & (1 << 6)) value |= (1 << 4);
+        }
+        else
+        {
+            value &= ((buttons & 3) | ((buttons >> 2) & 0x30));
+        }
     }
+
     return value;
 }
 
@@ -181,6 +216,16 @@ void gwenesis_io_write_ctrl(unsigned int address, unsigned int value)
     // JOYPAD DATA
     if (address >= 0x1 && address <= 0x3)
     {
+        int pad = address - 1;
+        uint8_t new_th = value & 0x40;
+        uint8_t old_th = gwenesis_io_pad_state[pad] & 0x40;
+
+        if (new_th == 0x00 && old_th == 0x40)
+        {
+            th_pulse_count[pad]++;
+            if (th_pulse_count[pad] > 4)
+                th_pulse_count[pad] = 0;
+        }
 
         io_reg[address] = value;
         gwenesis_io_pad_write(address - 1, value);

@@ -14,12 +14,13 @@
 #define RG_MIPI_DSI_LANE_NUM          1     // 数据通道数
 #endif
 
+
 #ifndef RG_MIPI_DSI_LANE_BITRATE_MBPS
-#define RG_MIPI_DSI_LANE_BITRATE_MBPS 1000  // 1Gbps
+#define RG_MIPI_DSI_LANE_BITRATE_MBPS 600  // max 1Gbps
 #endif
 
 #ifndef RG_MIPI_DSI_DPI_CLK_MHZ
-#define RG_MIPI_DSI_DPI_CLK_MHZ       32    // DPI 时钟频率
+#define RG_MIPI_DSI_DPI_CLK_MHZ       22    // DPI 时钟频率
 #endif
 
 // 时序参数 - 根据你的屏幕规格调整
@@ -210,7 +211,7 @@ static void lcd_init(void)
 
     // 4. 配置 MIPI DPI 面板 (用于发送像素数据)
     esp_lcd_dpi_panel_config_t dpi_config = {
-        .num_fbs = FB_NUM, 
+        .num_fbs = FB_NUM,
         .virtual_channel = 0,
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = RG_MIPI_DSI_DPI_CLK_MHZ,
@@ -274,7 +275,7 @@ static void lcd_init(void)
         RG_LOGI("Screen rotation is configured (%d), but temporarily disabled for debugging\n", RG_SCREEN_ROTATE);
         // lcd_set_rotation(RG_SCREEN_ROTATE);
     }
-    
+
 
     ppa_client_config_t ppa_srm_config = {
         .oper_type = PPA_OPERATION_SRM,
@@ -283,60 +284,34 @@ static void lcd_init(void)
     ret = ppa_register_client(&ppa_srm_config, &ppa_srm_handle);
     RG_ASSERT(ret == ESP_OK, "Failed to register PPA client");
     RG_LOGI("PPA client registered successfully\n");
-    
-  
+
+
 #if FB_NUM == 2
-        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(mipi_dpi_panel, 2, (void **)&fbs[0], (void **)&fbs[1])); 
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(mipi_dpi_panel, 2, (void **)&fbs[0], (void **)&fbs[1]));
 #else
-        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(mipi_dpi_panel, 1, (void **)&fbs[0])); 
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(mipi_dpi_panel, 1, (void **)&fbs[0]));
 #endif
 
 
     RG_LOGI("ST7701 MIPI DSI LCD initialized successfully\n");
 }
 
+
 static void lcd_deinit(void)
 {
-  /*   if (mipi_dpi_panel) {
-        esp_lcd_panel_del(mipi_dpi_panel);
-        mipi_dpi_panel = NULL;
-    }
-
-    if (mipi_dbi_io) {
-        esp_lcd_panel_io_del(mipi_dbi_io);
-        mipi_dbi_io = NULL;
-    }
-
-    if (mipi_dsi_bus) {
-        esp_lcd_del_dsi_bus(mipi_dsi_bus);
-        mipi_dsi_bus = NULL;
-    }
-
-#ifdef RG_MIPI_DSI_PHY_PWR_LDO_CHAN
-    if (ldo_mipi_phy) {
-        esp_ldo_release_channel(ldo_mipi_phy);
-        ldo_mipi_phy = NULL;
-    }
+#ifdef RG_GPIO_LCD_BCKL
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    ledc_fade_func_uninstall();
 #endif
 
-    if (transfer_done_sem) {
-        vSemaphoreDelete(transfer_done_sem);
-        transfer_done_sem = NULL;
+    if (ppa_srm_handle) {
+        ppa_unregister_client(ppa_srm_handle);
+        ppa_srm_handle = NULL;
     }
 
-    if (lcd_buffers) {
-        for (int i = 0; i < LCD_BUFFER_COUNT; i++) {
-            if (lcd_buffer_pool[i]) {
-                free(lcd_buffer_pool[i]);
-                lcd_buffer_pool[i] = NULL;
-            }
-        }
-        vQueueDelete(lcd_buffers);
-        lcd_buffers = NULL;
-    }
- */
     RG_LOGI("ST7701 LCD deinitialized\n");
 }
+
 
 static void lcd_set_backlight(float percent)
 {
@@ -385,12 +360,12 @@ static void s_srm_ops(void *in_buf, void *out_buf, size_t buf_size,int width,int
 
 // FIT 模式：保持宽高比 + 90度旋转，适应屏幕（可能有黑边）
 // 物理屏幕是 480x640 (portrait)，但我们需要横屏显示，所以旋转90度
-static void s_srm_ops_fit(void *in_buf, void *out_buf, size_t buf_size, 
+static void s_srm_ops_fit(void *in_buf, void *out_buf, size_t buf_size,
                           int src_width, int src_height,
                           float scale,
                           int out_left, int out_top)
 {
-    
+
     //memset(out_buf, 0, buf_size);
     // PPA 会根据输入输出尺寸自动计算缩放比例
     // 旋转90度：输出w对应输入h，输出h对应输入w
@@ -422,13 +397,13 @@ static void s_srm_ops_fit(void *in_buf, void *out_buf, size_t buf_size,
 }
 
 // FULL 模式：填满整个屏幕 + 90度旋转（可能拉伸）
-static void s_srm_ops_full(void *in_buf, void *out_buf, size_t buf_size, 
+static void s_srm_ops_full(void *in_buf, void *out_buf, size_t buf_size,
                            int src_width, int src_height,
                            float scale_x, float scale_y,
                            int out_width, int out_height)
 {
-    
-    
+
+
     ppa_srm_oper_config_t srm_config = {
         .in.buffer = in_buf,
         .in.pic_w = src_width,
@@ -482,7 +457,7 @@ static inline void lcd_send_buffer(uint16_t *buffer, size_t length)
     // 计算实际要绘制的行数
     int pixels = length;
     int lines = pixels / current_window.width;
-    
+
     if (lines == 0) {
         xQueueSend(lcd_buffers, &buffer, portMAX_DELAY);
         return;
@@ -500,48 +475,48 @@ static inline void lcd_send_buffer(uint16_t *buffer, size_t length)
     int y_start = current_window.top;
     int x_end = current_window.left + current_window.width - 1;
     int y_end = current_window.top + lines - 1;
-    
-   
+
+
     // 发送数据到面板（注意：draw_bitmap 使用 x_end+1, y_end+1）
-    esp_err_t ret = esp_lcd_panel_draw_bitmap(mipi_dpi_panel, 
-                                               x_start, y_start, 
-                                               x_end + 1, y_end + 1, 
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(mipi_dpi_panel,
+                                               x_start, y_start,
+                                               x_end + 1, y_end + 1,
                                                buffer);
-   
+
     if (ret != ESP_OK) {
         RG_LOGE("Failed to draw bitmap: %d\n", ret);
     }
-    
+
     // 更新窗口的顶部位置，为下一块数据做准备
     /* current_window.top += lines;
     current_window.height -= lines;  */
 
     // 归还缓冲区
     xQueueSend(lcd_buffers, &buffer, portMAX_DELAY);
-    
+
 }
 
 static inline uint16_t *lcd_get_buffer_ppa()
 {
-  
+
    cur_fb_index = (cur_fb_index + 1) % FB_NUM;
-   return fbs[cur_fb_index]; 
+   return fbs[cur_fb_index];
 
 }
 
 static inline void lcd_send_buffer_ppa(uint16_t *buffer, size_t length, int left, int top, int width, int height)
 {
 
-    esp_err_t ret = esp_lcd_panel_draw_bitmap(mipi_dpi_panel, 
-                                               left, top, 
-                                               width, height, 
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(mipi_dpi_panel,
+                                               left, top,
+                                               width, height,
                                                buffer);
-   
+
     if (ret != ESP_OK) {
         RG_LOGE("Failed to draw bitmap: %d\n", ret);
     }
-   
-    
+
+
 }
 
 static void lcd_sync(void)
@@ -551,7 +526,7 @@ static void lcd_sync(void)
         //RG_LOGE("wait transfer done semaphore");
         xSemaphoreTake(transfer_done_sem, portMAX_DELAY);
         //RG_LOGE("transfer done semaphore taken");
-    }  
+    }
 }
 
 static void lcd_set_rotation(int rotation)
@@ -562,7 +537,7 @@ static void lcd_set_rotation(int rotation)
     }
 
     esp_err_t ret = ESP_OK;
-    
+
     // 根据旋转角度设置 mirror 和 swap_xy
     // 旋转通过组合镜像和 XY 交换实现
     switch (rotation) {
@@ -571,30 +546,30 @@ static void lcd_set_rotation(int rotation)
             ret |= esp_lcd_panel_mirror(mipi_dpi_panel, false, false);
             RG_LOGI("Screen rotation set to 0°\n");
             break;
-            
+
         case 90:  // 90° - 顺时针旋转
             ret |= esp_lcd_panel_swap_xy(mipi_dpi_panel, true);
             ret |= esp_lcd_panel_mirror(mipi_dpi_panel, true, false);
             RG_LOGI("Screen rotation set to 90° (landscape)\n");
             break;
-            
+
         case 180:  // 180° - 翻转
             ret |= esp_lcd_panel_swap_xy(mipi_dpi_panel, false);
             ret |= esp_lcd_panel_mirror(mipi_dpi_panel, true, true);
             RG_LOGI("Screen rotation set to 180°\n");
             break;
-            
+
         case 270:  // 270° - 逆时针旋转
             ret |= esp_lcd_panel_swap_xy(mipi_dpi_panel, true);
             ret |= esp_lcd_panel_mirror(mipi_dpi_panel, false, true);
             RG_LOGI("Screen rotation set to 270° (landscape)\n");
             break;
-            
+
         default:
             RG_LOGW("Invalid rotation angle: %d (must be 0, 90, 180, or 270)\n", rotation);
             return;
     }
-    
+
     if (ret != ESP_OK) {
         RG_LOGE("Failed to set rotation: %d\n", ret);
     }
