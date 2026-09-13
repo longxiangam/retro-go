@@ -131,7 +131,7 @@ ILI9341_CMD(0xE1, 0xD0, 0x00, 0x02, 0x07, 0x0a, 0x28, 0x31, 0x54, 0x47, 0x0E, 0x
  #define RG_BATTERY_DRIVER            1   // 1 = ADC, 2 = MRGC
  #define RG_BATTERY_ADC_UNIT          ADC_UNIT_1
  #define RG_BATTERY_ADC_CHANNEL       ADC_CHANNEL_0
- #define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 3400.f) / (3900.f - 3400.f) * 100.f)
+ #define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 2200.f) / (2800.f - 2200.f) * 100.f)
  
  #define RG_BATTERY_CALC_VOLTAGE(raw) ((raw) * 2.f * 0.001f)
 

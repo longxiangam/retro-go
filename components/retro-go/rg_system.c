@@ -144,11 +144,22 @@ static bool update_boot_config(const char *partition, const char *name, const ch
     const esp_partition_t *current = esp_ota_get_boot_partition();
     if (partition && (!current || strncmp(current->label, partition, 16) != 0))
     {
-        esp_err_t err = esp_ota_set_boot_partition(esp_partition_find_first(
-                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partition));
+        /* The flash write occasionally times out under load (power-droop
+         * sensitive hardware); retry a few times before giving up. */
+        esp_err_t err = ESP_FAIL;
+        for (int attempt = 0; attempt < 5 && err != ESP_OK; attempt++)
+        {
+            err = esp_ota_set_boot_partition(esp_partition_find_first(
+                    ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partition));
+            if (err != ESP_OK)
+            {
+                RG_LOGE("esp_ota_set_boot_partition returned 0x%02X (attempt %d)", err, attempt + 1);
+                vTaskDelay(pdMS_TO_TICKS(150));
+            }
+        }
         if (err != ESP_OK)
         {
-            RG_LOGE("esp_ota_set_boot_partition returned 0x%02X!", err);
+            RG_LOGE("esp_ota_set_boot_partition failed after retries!");
             return false;
         }
     }

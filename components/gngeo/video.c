@@ -78,6 +78,18 @@ void draw_scanline_tile_i386_50(unsigned int tileno, int yoffs, int sx, int line
 //Uint8 strip_usage[0x300];
 #define PEN_USAGE(tileno) ((((Uint32*) memory.rom.spr_usage.p)[tileno>>4]>>((tileno&0xF)*2))&0x3)
 
+/* Safe version of PEN_USAGE that bounds-checks against spr_usage table size.
+ * Extended tiles (tileno >= nb_of_tiles) have no spr_usage entry, so we
+ * fall back to TILE_NORMAL (visible) instead of reading out-of-bounds memory. */
+static inline Uint8 pen_usage_safe(Uint32 tileno) {
+    Uint32 max_words = memory.rom.spr_usage.size / sizeof(Uint32);
+    Uint32 word_idx = tileno >> 4;
+    if (word_idx >= max_words) {
+        return TILE_NORMAL;
+    }
+    return ((((Uint32*)memory.rom.spr_usage.p)[word_idx]) >> ((tileno & 0xF) * 2)) & 0x3;
+}
+
 
 char *ldda_y_skip;
 char *dda_x_skip;
@@ -217,6 +229,10 @@ Uint8 *get_cached_sprite_ptr(Uint32 tileno) {
 
 	int bank = ((tileno & tile_sh) / (gcache->slot_size >> 7));
 	int a;
+
+	if (bank >= gcache->total_bank) {
+		bank %= gcache->total_bank;
+	}
 
 	if (gcache->ptr[bank]) {
 		/* The bank is present in the cache */
@@ -532,9 +548,9 @@ static void prefetch_sprite_banks(void) {
 			else if (tileatr & 0x4)
 				tileno = (tileno & ~3) + ((tileno + neogeo_frame_counter) & 3);
 
-			if (tileno > memory.nb_of_tiles) continue;
+			if (tileno >= memory.nb_of_tiles) continue;
 
-			Uint8 pen = PEN_USAGE(tileno);
+			Uint8 pen = pen_usage_safe(tileno);
 			if (pen == TILE_INVISIBLE) continue;
 
 			int bank = (tileno & tile_mask) / tiles_per_bank;
@@ -758,7 +774,7 @@ void draw_screen(void) {
 				}
 			}
 
-			if (tileno > memory.nb_of_tiles) {
+			if (tileno >= memory.nb_of_tiles) {
 				//printf("Tno %04x Tat %04x %d\n",tileno,tileatr,memory.nb_of_tiles);
 				continue;
 			}
@@ -799,7 +815,7 @@ void draw_screen(void) {
 			if (sx >= -16 && sx + 15 < 336 && sy >= 0 && sy + 15 < 256) {
 				unsigned int orig_tileno = tileno;
 
-				penusage = PEN_USAGE(tileno);
+				penusage = pen_usage_safe(tileno);
 				if (memory.vid.spr_cache.data) {
 					memory.rom.tiles.p = get_cached_sprite_ptr(tileno);
 					tileno = (tileno & ((memory.vid.spr_cache.slot_size >> 7) - 1));
@@ -1059,7 +1075,7 @@ void draw_screen_scanline(int start_line, int end_line, int refresh) {
 			else if (tileatr & 0x4) tileno = (tileno&~3)+((tileno + neogeo_frame_counter)&3);
 			if (tileatr & 0x02) yoffs ^= 0x0f; /* flip y */
 
-			penusage = PEN_USAGE(tileno);
+			penusage = pen_usage_safe(tileno);
 			if (memory.vid.spr_cache.data) {
 				memory.rom.tiles.p = get_cached_sprite_ptr(tileno);
 				tileno = (tileno & ((memory.vid.spr_cache.slot_size >> 7) - 1));

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -1024,12 +1025,46 @@ static void free_region(ROM_REGION *r) {
 #define CUSAGE_MAGIC          0x43553039  /* "CU09" — unbuffered I/O for read-modify-write */
 
 /* Minimum free PSRAM to keep after all allocations (headroom for stacks, etc.) */
-#define PSRAM_HEADROOM        (100 * 1024 * 1024)
+#define PSRAM_HEADROOM        (8 * 1024 * 1024)
 
 static int streaming_tiles = 0;   /* 1 if sprite tiles are streamed from SD */
 static int streaming_adpcma = 0;  /* 1 if ADPCM-A is streamed from SD */
 static int streaming_adpcmb = 0;  /* 1 if ADPCM-B is streamed from SD */
 static FILE *stream_tile_file = NULL;   /* temp file handle during cache creation */
+
+/* Write a tiny test file to diagnose why SD writes fail (full / read-only / I/O error) */
+static void sd_write_probe(void) {
+	const char *probe_path = "/sd/rg_write_test.tmp";
+	FILE *fp = fopen(probe_path, "wb");
+	if (!fp) {
+		printf("SD WRITE PROBE: open failed, errno=%d (%s)\n", errno, strerror(errno));
+		return;
+	}
+	if (fputc(0x5A, fp) == EOF || fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
+		printf("SD WRITE PROBE: write failed, errno=%d (%s)\n", errno, strerror(errno));
+		fclose(fp);
+		remove(probe_path);
+		return;
+	}
+	fclose(fp);
+	remove(probe_path);
+	printf("SD WRITE PROBE: OK — writes DO work\n");
+}
+
+/* Ensure the parent directory of a cache path exists (fopen does not mkdir) */
+static void ensure_cache_dir(const char *path) {
+	char dir[160];
+	char *slash;
+	strncpy(dir, path, sizeof(dir) - 1);
+	dir[sizeof(dir) - 1] = '\0';
+	slash = strrchr(dir, '/');
+	if (!slash || slash == dir)
+		return;
+	*slash = '\0';
+	struct stat st;
+	if (stat(dir, &st) != 0)
+		mkdir(dir, 0777);
+}
 static FILE *stream_adpcma_file = NULL;
 static FILE *stream_adpcmb_file = NULL;
 
@@ -1190,15 +1225,21 @@ static int setup_sprite_streaming(const char *ctile_path, Uint32 tile_size) {
 		return GN_FALSE;
 	}
 
-	/* Build FATFS path: strip VFS mount-point "/sd" and prepend drive "0:" */
+	/* Build FATFS path: strip VFS mount-point "/sd" and prepend the drive.
+	 * The SD volume number is not guaranteed to be "0:" (it depends on how
+	 * many FAT volumes esp-idf mounted before it), so probe all of them. */
 	char fatfs_path[256];
 	const char *rel = ctile_path;
 	if (strncmp(rel, "/sd/", 4) == 0) rel += 3;   /* keep leading '/' */
-	snprintf(fatfs_path, sizeof(fatfs_path), "0:%s", rel);
-
-	FRESULT fres = f_open(fil, fatfs_path, FA_READ);
+	FRESULT fres = FR_INVALID_OBJECT;
+	for (int vol = 0; vol < 8; vol++) {
+		snprintf(fatfs_path, sizeof(fatfs_path), "%d:%s", vol, rel);
+		fres = f_open(fil, fatfs_path, FA_READ);
+		if (fres == FR_OK)
+			break;
+	}
 	if (fres != FR_OK) {
-		printf("ERROR: f_open(%s) failed, FRESULT=%d\n", fatfs_path, (int)fres);
+		printf("ERROR: f_open(%s) failed on all volumes, FRESULT=%d\n", rel, (int)fres);
 		heap_caps_free(fil);
 		return GN_FALSE;
 	}
@@ -2005,12 +2046,12 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 			allocate_region(&r->tiles, tiles_size, REGION_SPRITES);
 		}
 
-		/* Recalculate remaining budget */
-		Uint32 remaining = budget - (streaming_tiles ? 0 : tiles_size);
+		/* Recalculate remaining budget (signed: the cache reserve can exceed it) */
+		int64_t remaining = (int64_t)budget - (streaming_tiles ? 0 : tiles_size);
 		remaining -= SPRITE_CACHE_BUDGET; /* reserve for sprite cache if streaming */
 
 		if (conf.sound && adpcma_size > 0) {
-			if (adpcma_size > remaining) {
+			if ((int64_t)adpcma_size > remaining) {
 				streaming_adpcma = 1;
 				r->adpcma.p = NULL;
 				r->adpcma.size = adpcma_size;
@@ -2020,7 +2061,7 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 				remaining -= adpcma_size;
 			}
 
-			if (adpcmb_size > 0 && adpcmb_size > remaining) {
+			if (adpcmb_size > 0 && (int64_t)adpcmb_size > remaining) {
 				streaming_adpcmb = 1;
 				r->adpcmb.p = NULL;
 				r->adpcmb.size = adpcmb_size;
@@ -2101,8 +2142,17 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 			remove(ctile_path);
 			remove(cusage_chk);
 			printf("Creating sprite cache: %s (%u MB)\n", ctile_path, tiles_size / (1024*1024));
+			ensure_cache_dir(ctile_path);
 			stream_tile_file = fopen(ctile_path, "w+b");
-			if (stream_tile_file) {
+			if (!stream_tile_file) {
+				printf("ERROR: Cannot create %s, errno=%d (%s)\n",
+					   ctile_path, errno, strerror(errno));
+				gn_set_error_msg("ERROR: Cannot create %s — SD full or read-only?\n",
+								 ctile_path);
+				sd_write_probe();
+				return GN_FALSE;
+			}
+			{
 				/* Pre-fill file to full size (zeroed) */
 				Uint8 zero[4096];
 				memset(zero, 0, sizeof(zero));
@@ -2120,6 +2170,12 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 					setvbuf(stream_tile_file, NULL, _IONBF, 0);  /* Unbuffered — critical for read-modify-write on FATFS */
 				printf("Pre-fill done (%u MB)\n", tiles_size / (1024*1024));
 			}
+			if (!stream_tile_file) {
+				gn_set_error_msg("ERROR: Cannot reopen %s — SD full or read-only?\n",
+								 ctile_path);
+				printf("ERROR: Cannot reopen %s — SD full or read-only?\n", ctile_path);
+				return GN_FALSE;
+			}
 		}
 	}
 	if (streaming_adpcma) {
@@ -2129,7 +2185,13 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 		} else {
 			remove(vroma_path);
 			printf("Creating ADPCM-A cache: %s (%u MB)\n", vroma_path, adpcma_size / (1024*1024));
+			ensure_cache_dir(vroma_path);
 			stream_adpcma_file = fopen(vroma_path, "w+b");
+			if (!stream_adpcma_file) {
+				gn_set_error_msg("ERROR: Cannot create %s — SD full or read-only?\n", vroma_path);
+				printf("ERROR: Cannot create %s — SD full or read-only?\n", vroma_path);
+				return GN_FALSE;
+			}
 		}
 	}
 	if (streaming_adpcmb && adpcmb_size > 0) {
@@ -2139,6 +2201,7 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 		} else {
 			remove(vromb_path);
 			printf("Creating ADPCM-B cache: %s (%u MB)\n", vromb_path, adpcmb_size / (1024*1024));
+			ensure_cache_dir(vromb_path);
 			stream_adpcmb_file = fopen(vromb_path, "w+b");
 		}
 	}
@@ -2306,8 +2369,8 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 	free(iloadbuf);
 	iloadbuf = NULL;
 	gn_loading_info("Decrypting ROMs...");
-	if (skip_tile_extract)
-		need_decrypt = 0;
+	/* NOTE: the tile cache only bakes in the C-ROM (gfx) decryption;
+	 * the 68K P ROM always needs its own decrypt, cache or not. */
 	init_roms(r);
 
 	/* Handle streaming tile cache creation */
@@ -2368,6 +2431,14 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 				fsync(fileno(uf));
 				fclose(uf);
 				printf("Saved spr_usage (%u bytes)\n", r->spr_usage.size);
+			} else {
+				FATFS *fs;
+				DWORD free_clusters;
+				unsigned long free_mb = 0;
+				if (f_getfree("0:", &free_clusters, &fs) == FR_OK)
+					free_mb = (unsigned long)((uint64_t)free_clusters * fs->csize * fs->ssize >> 20);
+				printf("WARN: cannot write %s (SD free: %lu MB) — continuing\n",
+					   cusage_path, free_mb);
 			}
 		} else {
 			/* Load spr_usage from companion file */
@@ -2381,10 +2452,10 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 				fclose(uf);
 				printf("Loaded spr_usage from %s\n", cusage_path);
 			} else {
-				/* No valid cusage — should not happen (checked earlier) */
-				printf("ERROR: cusage file missing, deleting cache\n");
-				remove(ctile_path);
-				remove(cusage_path);
+				/* cusage is only a persistence of the usage table (which we
+				 * just zeroed in RAM); the .ctile itself is still valid, so
+				 * keep it and continue streaming instead of deleting it. */
+				printf("WARN: cusage unreadable, restarting usage stats (cache kept)\n");
 				memset(r->spr_usage.p, 0, usage_size);
 			}
 		}

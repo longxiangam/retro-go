@@ -1196,6 +1196,36 @@ void garouo_decrypt_68k(running_machine *machine)
 }
 
 
+/* mslug3 68k decryption, matching MAME prot_sma.cpp bitswap<19>/<15>/<16>
+ * semantics: the FIRST argument of each MAME bitswap list is the source bit
+ * for the MOST significant output bit. */
+static UINT32 mslug3_bs19(Uint32 i) {
+	static const int idx[19] = {18,15,2,1,13,3,0,9,6,16,4,11,5,7,12,17,14,10,8};
+	UINT32 r = 0;
+	int k;
+	for (k = 0; k < 19; k++)
+		r |= ((i >> idx[k]) & 1) << (18 - k);
+	return r;
+}
+
+static UINT16 mslug3_data_swap16(Uint16 v) {
+	static const int idx[16] = {4,11,14,3,1,13,0,7,2,8,12,15,10,9,5,6};
+	UINT16 r = 0;
+	int k;
+	for (k = 0; k < 16; k++)
+		r |= ((v >> idx[k]) & 1) << (15 - k);
+	return r;
+}
+
+static UINT32 mslug3_bs15(Uint32 j) {
+	static const int idx[15] = {2,11,0,14,6,4,13,8,9,3,10,7,5,12,1};
+	UINT32 r = 0;
+	int k;
+	for (k = 0; k < 15; k++)
+		r |= ((j >> idx[k]) & 1) << (14 - k);
+	return r;
+}
+
 void mslug3_decrypt_68k(running_machine *machine)
 {
 	UINT16 *rom;
@@ -1206,14 +1236,14 @@ void mslug3_decrypt_68k(running_machine *machine)
 	/* swap data lines on the whole ROMs */
 	for (i = 0;i < 0x800000/2;i++)
 	{
-		rom[i] = BITSWAP16(rom[i],4,11,14,3,1,13,0,7,2,8,12,15,10,9,5,6);
+		rom[i] = mslug3_data_swap16(rom[i]);
 	}
 
 	/* swap address lines & relocate fixed part */
 	rom = (UINT16 *)memory_region(machine, "maincpu");
 	for (i = 0;i < 0x0c0000/2;i++)
 	{
-		rom[i] = rom[0x5d0000/2 + BITSWAP24(i,23,22,21,20,19,18,15,2,1,13,3,0,9,6,16,4,11,5,7,12,17,14,10,8)];
+		rom[i] = rom[0x5d0000/2 + mslug3_bs19(i)];
 	}
 
 	/* swap address lines for the banked part */
@@ -1224,7 +1254,7 @@ void mslug3_decrypt_68k(running_machine *machine)
 		memcpy(buffer,&rom[i],0x10000);
 		for (j = 0;j < 0x10000/2;j++)
 		{
-			rom[i+j] = buffer[BITSWAP24(j,23,22,21,20,19,18,17,16,15,2,11,0,14,6,4,13,8,9,3,10,7,5,12,1)];
+			rom[i+j] = buffer[mslug3_bs15(j)];
 		}
 	}
 	free(buffer);

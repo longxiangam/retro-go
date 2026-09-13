@@ -188,7 +188,7 @@ int screen_init(void) {
     sprbuf = &sprbuf_surface;
 
     /* Visible area — standard Neo Geo viewport */
-    visible_area.x = 16;
+    visible_area.x = 24;
     visible_area.y = 16;
     visible_area.w = NEO_VIS_W;
     visible_area.h = NEO_VIS_H;

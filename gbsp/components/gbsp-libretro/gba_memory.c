@@ -336,12 +336,10 @@ const u32 def_seq_cycles[16][2] =
   { 9, 17 }, // Gamepak (wait 2)
 };
 
-#ifndef RETRO_GO
 u8 bios_rom[1024 * 16];
 
 // Up to 128kb, store SRAM, flash ROM, or EEPROM here.
-u8 gamepak_backup[1024 * 128];
-#endif
+// gamepak_backup is defined in gpsp_memory_alloc.c (PSRAM).
 
 u32 dma_bus_val;
 dma_transfer_type dma[4];
@@ -1564,6 +1562,10 @@ typedef struct
 #define FLAGS_RTC            0x0008   // Enables RTC support by default.
 #define FLAGS_EEPROM         0x0010   // Forces EEPROM storage.
 #define FLAGS_RFU            0x0020   // Enables Wireless Adapter (via serial).
+#define FLAGS_SERIAL         0x0040   // Enables serial link (over GPIO).
+#define FLAGS_SERIAL_AW1     0x0140   // Serial + AW1 variant.
+#define FLAGS_SERIAL_AW2     0x0240   // Serial + AW2 variant.
+#define FLAGS_SERIAL_POKE    0x0440   // Serial + POKE variant.
 
 #include "gba_over.h"
 
