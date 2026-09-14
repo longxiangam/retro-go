@@ -23,6 +23,7 @@ bool gpsp_init(void);
 
 /* Load ROM from file path. Returns 0 on success. */
 int gpsp_load_rom(const char *rom_path);
+int gpsp_load_rom_mem(const void *rom_data, size_t rom_size);
 
 /* Run one frame of emulation. Returns pointer to 240x160 RGB565 framebuffer. */
 uint16_t *gpsp_run_frame(void);

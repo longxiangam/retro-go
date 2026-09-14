@@ -370,6 +370,16 @@ LONG_FETCH(mem68k_fetch_video)
 
 /**** CONTROLLER ****/
 
+void mem68k_store_ctl1_byte(Uint32 addr, Uint8 data) {
+    if ((addr & 0xFFFF) == 0x0001) { wd_kick(); memory.watchdog = 0; }
+}
+void mem68k_store_ctl1_word(Uint32 addr, Uint16 data) {
+    if ((addr & 0xFFFF) == 0x0001) { wd_kick(); memory.watchdog = 0; }
+}
+void mem68k_store_ctl1_long(Uint32 addr, Uint16 data) {
+    wd_kick(); memory.watchdog = 0;
+}
+
 Uint8 mem68k_fetch_ctl1_byte(Uint32 addr) {
     addr &= 0xFFFF;
     if (!(addr & 1))
@@ -437,6 +447,9 @@ Uint8 mem68k_fetch_coin_byte(Uint32 addr) {
     }
     /* Even address: sound result code */
     {
+        static unsigned poll_cnt = 0;
+        static Uint8 last_res = 0xFF;
+        static int tr_log = 0;
         int res = 0;
         if (conf.sound) {
 #ifdef ENABLE_940T
@@ -450,6 +463,12 @@ Uint8 mem68k_fetch_coin_byte(Uint32 addr) {
 #endif
         } else {
             res |= 0x01;
+        }
+        poll_cnt++;
+        if ((res != last_res && tr_log < 60) || poll_cnt == 2000 || poll_cnt == 20000 || poll_cnt == 100000) {
+            if (res != last_res && tr_log < 60) tr_log++;
+            printf("SND_POLL n=%u res=%02x pend=%d result=%02x\n", poll_cnt, res, pending_command, result_code);
+            last_res = res;
         }
         return res;
     }
@@ -533,7 +552,12 @@ LONG_STORE(mem68k_store_ram)
 ;
 
 /**** SRAM ****/
+static int sram_wlog = 0;
 void mem68k_store_sram_byte(Uint32 addr, Uint8 data) {
+    if (sram_wlog < 16) {
+        sram_wlog++;
+        printf("SRAM_W %06x<=%02x lock=%d\n", addr, data, sram_lock);
+    }
     if (sram_lock)
         return;
     /*
@@ -634,6 +658,13 @@ void mem68k_store_video_word(Uint32 addr, Uint16 data) {
         break;
     case 0x2:
         //printf("Store %04x to video %08x @pc=%08x\n",data,vptr<<1,cpu_68k_getpc());
+        {
+            static int vw_log = 0;
+            if (vw_log < 48) {
+                vw_log++;
+                printf("VRAM_W %04x<=%04x\n", memory.vid.vptr, data);
+            }
+        }
         WRITE_WORD(&memory.vid.ram[memory.vid.vptr << 1], data);
         memory.vid.vptr = (memory.vid.vptr & 0x8000) + ((memory.vid.vptr
                                                          + memory.vid.modulo) & 0x7fff);
@@ -664,10 +695,12 @@ LONG_STORE(mem68k_store_video)
 
 /**** PD4990 ****/
 void mem68k_store_pd4990_byte(Uint32 addr, Uint8 data) {
+    if ((addr & 0xFFFF) == 0x0001) { wd_kick(); memory.watchdog = 0; return; }  /* $380001 */
     write_4990_control_w(addr, data);
 }
 
 void mem68k_store_pd4990_word(Uint32 addr, Uint16 data) {
+    if ((addr & 0xFFFF) == 0x0001) { wd_kick(); memory.watchdog = 0; return; }  /* $380001 */
     write_4990_control_w(addr, data);
 }
 
@@ -676,7 +709,13 @@ void mem68k_store_pd4990_long(Uint32 addr, Uint32 data) {
 }
 
 /**** Z80 ****/
+static int snd_w_log = 0;
 void mem68k_store_z80_byte(Uint32 addr, Uint8 data) {
+    if ((addr & 0xFFFF) == 0x0001) { wd_kick(); memory.watchdog = 0; }   /* watchdog mirror at $320001 */
+    if (snd_w_log < 30 && (addr & 0xFFFF) == 0x0000) {
+        snd_w_log++;
+        printf("SND_W code=%02x\n", data & 0xff);
+    }
     if (addr == 0x320000) {
         sound_code = data & 0xff;
         pending_command = 1;
@@ -741,19 +780,28 @@ void mem68k_store_z80_long(Uint32 addr, Uint32 data) {
 }
 
 /**** SETTINGS ****/
+static int setting_log = 0;
 void mem68k_store_setting_byte(Uint32 addr, Uint8 data) {
     addr &= 0xFFFF;
+    if (addr == 0x0001) { wd_kick(); memory.watchdog = 0; return; }  /* watchdog mirror $3A0001 */
+    if (setting_log < 40) {
+        setting_log++;
+        printf("SETTING_W %04x=%02x\n", addr, data);
+    }
 
     if (addr == 0x0003) {
         //printf("BIOS_VEC: switch to BIOS vectors\n");
         memcpy(memory.rom.cpu_m68k.p, memory.rom.bios_m68k.p, 0x80);
         memory.current_vector=0;
+        wd_enabled = 0;                 /* BIOS phase: watchdog off */
     }
 
     if (addr == 0x0013) {
         //printf("GAME_VEC: switch to GAME vectors!\n");
         memcpy(memory.rom.cpu_m68k.p, memory.game_vector, 0x80);
         memory.current_vector=1;
+        wd_enabled = 1;                 /* game phase: watchdog armed */
+        wd_frames_since_kick = 0;
     }
 
     if (addr == 0x000b) { /* select board fix */
@@ -774,6 +822,7 @@ void mem68k_store_setting_byte(Uint32 addr, Uint8 data) {
     }
     if (addr == 0x001d) { /* sram unlock */
         sram_lock = 0;
+        sram_wlog = 0;
         return;
     }
     if (addr == 0x000f) { /* set palette 2 */
@@ -794,6 +843,8 @@ void mem68k_store_setting_byte(Uint32 addr, Uint8 data) {
 }
 
 void mem68k_store_setting_word(Uint32 addr, Uint16 data) {
+    if ((addr & 0xFFFF) == 0x0001) { wd_kick(); memory.watchdog = 0; return; }
+
     /* Setting registers trigger on odd address.  A word write to even addr N
      * also writes the low byte at N+1 (the odd address), so trigger on N|1. */
     mem68k_store_setting_byte(addr | 1, data & 0xFF);
@@ -838,8 +889,25 @@ Uint16 sma_random(void) {
  */
 static Uint16 bksw_latch_word = 0;
 
+/* NeoGeo watchdog: real hardware resets the 68K if $300001 (mirrored through
+ * the I/O pages) is not written within ~0.13s.  Newer SNK games (mslug3...)
+ * exploit this: on first boot with invalid backup RAM they enter a deliberate
+ * no-kick loop and wait for the reset.  Without this emulation such games
+ * stall forever on a cleared screen. */
+int wd_enabled = 0;
+int wd_frames_since_kick = 0;
+void wd_kick(void) { wd_frames_since_kick = 0; }
+static int bksw_wr_log = 0;   /* diag: bankswitch write log */
+static int bksw_rd_log = 0;   /* diag: SMA region read log */
+
 /* Normal bankswitcher */
 Uint8 mem68k_fetch_bk_normal_byte(Uint32 addr) {
+    if (bksw_rd_log < 30 && (addr & 0xFFFF) == 0xE447) {
+        bksw_rd_log++;
+        printf("SMA_RD_B %08x bank=%06x -> FF\n", addr, bankaddress);
+    }
+    if (memory.bksw_unscramble && (addr & 0xFFFF) == 0xE446)
+        return 0xFF;
     if (memory.bksw_unscramble) {
         Uint32 a=addr&0xFFFFE;
         if (memory.sma_rng_addr && addr>=0x2fff00 &&
@@ -855,6 +923,13 @@ Uint8 mem68k_fetch_bk_normal_byte(Uint32 addr) {
 }
 
 Uint16 mem68k_fetch_bk_normal_word(Uint32 addr) {
+    if (bksw_rd_log < 30 && (addr & 0xFFFF) == 0xE447) {
+        bksw_rd_log++;
+        printf("SMA_RD_W %08x bank=%06x -> FFFF\n", addr, bankaddress);
+    }
+    /* MAME: SMA carts install protection_r at $2FE446-$2FE447, default returns $FFFF */
+    if (memory.bksw_unscramble && (addr & 0xFFFF) == 0xE446)
+        return 0xFFFF;
     if (memory.bksw_unscramble) {
         if (memory.sma_rng_addr && addr>=0x2fff00 &&
             (((addr & 0xFF) == (memory.sma_rng_addr & 0xFF)) || 
@@ -906,6 +981,11 @@ void mem68k_store_bk_normal_word(Uint32 addr, Uint16 data) {
     if (addr >= 0x2FFFF0)
         bksw_latch_word = data;
 
+    if (bksw_wr_log < 40 && addr >= 0x2FF000) {
+        bksw_wr_log++;
+        printf("BKSW_W %08x=%04x unscr=%d trig=%02x\n", addr, data,
+               memory.bksw_unscramble != 0, memory.bksw_unscramble ? memory.bksw_unscramble[0] : 0);
+    }
     if (memory.bksw_unscramble && (addr & 0xFF) == memory.bksw_unscramble[0]) {
         /* unscramble bank number */
         data = 

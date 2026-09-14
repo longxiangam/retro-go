@@ -125,6 +125,12 @@ extern Uint8 *neogeo_fast_ram;
 extern Uint8 *current_pal;
 extern Uint32 *current_pc_pal;
 extern Uint8 *current_fix;
+extern int wd_enabled;
+extern int wd_frames_since_kick;
+void wd_kick(void);
+void mem68k_store_ctl1_byte(Uint32 addr, Uint8 data);
+void mem68k_store_ctl1_word(Uint32 addr, Uint16 data);
+void mem68k_store_ctl1_long(Uint32 addr, Uint16 data);
 extern Uint8 *fix_usage;
 
 /* sram */

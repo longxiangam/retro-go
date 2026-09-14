@@ -106,8 +106,8 @@ t_mem68k_def mem68k_def[] = {
     {0x300, 0x300, mem68k_memptr_bad,
      mem68k_fetch_ctl1_byte, mem68k_fetch_ctl1_word,
      mem68k_fetch_ctl1_long,
-     mem68k_store_invalid_byte, mem68k_store_invalid_word,
-     mem68k_store_invalid_long},
+     mem68k_store_ctl1_byte, mem68k_store_ctl1_word,
+     mem68k_store_ctl1_long},
 
     /* CONTRLOER 2 */
     {0x340, 0x340, mem68k_memptr_bad,

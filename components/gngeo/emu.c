@@ -236,6 +236,18 @@ static inline int neo_interrupt(void) {
 	skip_this_frame = skip_next_frame;
 	skip_next_frame = frame_skip(0);
 
+	/* NeoGeo watchdog: 10 frames without a $300001 kick = soft reset.
+	 * mslug3-family protection relies on this during first-boot init. */
+	if (wd_enabled) {
+		wd_frames_since_kick++;
+		if (wd_frames_since_kick > 10) {
+			printf("WATCHDOG: no kick for >10 frames - soft reset\n");
+			wd_frames_since_kick = 0;
+			wd_enabled = 0;
+			neogeo_reset();
+		}
+	}
+
 	if (!skip_this_frame) {
 		PROFILER_START(PROF_VIDEO);
 
@@ -261,6 +273,113 @@ static inline int neo_interrupt(void) {
 				}
 				printf("  FB: %d/%d non-black pixels  HOST_PAL: %d/4096 non-zero  backdrop_host=%08X\n",
 				       nonblack, total, hnz, (unsigned)hpal[4095]);
+				if (fb_diag >= 300 && (fb_diag % 1800) == 0) {
+					static int fb_slot = 0;
+					const char *fbnames[3] = {"/sd/roms/neogeo/fbA.bmp", "/sd/roms/neogeo/fbB.bmp", "/sd/roms/neogeo/fbC.bmp"};
+					/* dump framebuffer as 24bpp BMP to SD */
+					const char *bmp_path = fbnames[fb_slot % 3];
+					fb_slot++;
+					FILE *bf = fopen(bmp_path, "wb");
+					if (bf) {
+						int W = buffer->w, H = buffer->h;
+						int rowsz = W * 3;
+						unsigned fsz = 54 + rowsz * H;
+						unsigned char hdr[54] = {0};
+						hdr[0]='B'; hdr[1]='M';
+						hdr[2]=fsz&0xff; hdr[3]=(fsz>>8)&0xff; hdr[4]=(fsz>>16)&0xff; hdr[5]=(fsz>>24)&0xff;
+						hdr[10]=54;
+						hdr[14]=40;
+						hdr[18]=W&0xff; hdr[19]=(W>>8)&0xff;
+						hdr[22]=H&0xff; hdr[23]=(H>>8)&0xff;
+						hdr[26]=1; hdr[28]=24;
+						fwrite(hdr, 1, 54, bf);
+						for (int ry = H - 1; ry >= 0; ry--) {
+							for (int rx = 0; rx < W; rx++) {
+								uint16_t c = px[ry * W + rx];
+								unsigned char bgr[3];
+								bgr[0] = ((c & 0x1F) << 3) | ((c >> 2) & 7);
+								bgr[1] = ((c & 0x7E0) >> 3) | ((c >> 9) & 3);
+								bgr[2] = ((c >> 8) & 0xF8) | ((c >> 13) & 7);
+								fwrite(bgr, 1, 3, bf);
+							}
+						}
+						fclose(bf);
+						printf("FB_DUMP saved %s (%u bytes)\n", bmp_path, fsz);
+					} else {
+						printf("FB_DUMP open failed: %s\n", bmp_path);
+					}
+				}
+				if (fb_diag == 360 || fb_diag == 900 || fb_diag == 1800 || fb_diag == 3600 || fb_diag == 7200 || fb_diag == 14400) {
+					printf("FBPROBE SNAP frame=%d\n", fb_diag);
+					/* one-shot framebuffer probe: row luminance + ASCII view */
+					int W = buffer->w, H = buffer->h;
+					printf("FBPROBE dims=%dx%d\n", W, H);
+					printf("FBPROBE rows:");
+					for (int ry = 0; ry < H; ry++) {
+						Uint32 sum = 0;
+						for (int rx = 0; rx < W; rx++) {
+							uint16_t c = px[ry * W + rx];
+							sum += ((c >> 11) & 0x1F) + ((c >> 5) & 0x3F) + (c & 0x1F);
+						}
+						printf(" %02x", (unsigned)(sum / W));
+					}
+					printf("\n");
+					printf("FBPROBE art 64x28:\n");
+					const char *ramp = " .:-=+*#%@";
+					for (int ay = 0; ay < 28; ay++) {
+						int sy0 = ay * H / 28, sy1 = (ay + 1) * H / 28;
+						for (int ax = 0; ax < 64; ax++) {
+							Uint32 sum = 0; int n = 0;
+							for (int sy = sy0; sy < sy1; sy++) {
+								int sx0 = ax * W / 64, sx1 = (ax + 1) * W / 64;
+								for (int sx = sx0; sx < sx1; sx++) {
+									uint16_t c = px[sy * W + sx];
+									sum += ((c >> 11) & 0x1F) + ((c >> 5) & 0x3F) + (c & 0x1F);
+									n++;
+								}
+							}
+							putchar(ramp[n ? (sum / n) * 9 / 31 : 0]);
+						}
+						putchar('\n');
+					}
+					/* sprite list head: SCB2(y)/SCB3(x,attr) chains */
+					{
+						printf("SCBS: nb_tiles=%06x\n", memory.nb_of_tiles);
+						printf("SCB4:");
+						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x10000 + si*2]));
+						printf("\nSCB2:");
+						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x10400 + si*2]));
+						printf("\nSCB3:");
+						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x10800 + si*2]));
+						printf("\nSTRIP0T:");
+						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[si*2]));
+						printf("\nSTRIP1T:");
+						for (int si = 0; si < 16; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x40 + si*2]));
+						printf("\nSTRIP2T:");
+						for (int si = 0; si < 16; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x80 + si*2]));
+						printf("\n");
+					}
+					{
+						extern int neogeo_fix_bank_type;
+						extern Uint8 *current_fix;
+						printf("FIXSTATE: bank_type=%d curfix=%s gamefix_size=%u\n",
+						       neogeo_fix_bank_type,
+						       current_fix == memory.rom.game_sfix.p ? "GAME" : "BIOS",
+						       (unsigned)memory.rom.game_sfix.size);
+						printf("FIXTMAP:");
+						for (int fi = 0; fi < 64; fi++)
+							printf(" %04x", READ_WORD(&memory.vid.ram[0xEA00 + fi]));
+						printf("\n");
+					}
+					printf("SPR18:");
+					for (int si = 0; si < 12; si++)
+						printf(" %04x %04x %04x %04x",
+						       READ_WORD(&memory.vid.ram[si * 4 + 0]),
+						       READ_WORD(&memory.vid.ram[si * 4 + 1]),
+						       READ_WORD(&memory.vid.ram[si * 4 + 2]),
+						       READ_WORD(&memory.vid.ram[si * 4 + 3]));
+					printf("\n");
+				}
 			}
 		}
 
@@ -780,6 +899,16 @@ void neogeo_main_loop(void) {
 				int64_t t_cpu_e = esp_timer_get_time();
 				PROFILER_STOP(PROF_68K);
 				a = neo_interrupt();
+				/* Stall tracer: while the watchdog counter is high, log the
+				 * exact PC the CPU loops at (once per frame). */
+				if (memory.watchdog >= 5) {
+					static Uint32 last_stall_pc = 0xFFFFFFFF;
+					Uint32 pc_now = cpu_68k_getpc();
+					if (pc_now != last_stall_pc) {
+						last_stall_pc = pc_now;
+						printf("STALL_PC %06x wd=%d\n", pc_now, memory.watchdog);
+					}
+				}
 				int64_t t_vid_e = esp_timer_get_time();
 
 				/* state handling (we save/load before interrupt) */
@@ -788,7 +917,10 @@ void neogeo_main_loop(void) {
 				memory.watchdog++;
 
 				if (memory.watchdog > 7) { /* Watchdog fires after ~8 frames without kick (matches real HW / raster path) */
-                    printf("WATCHDOG RESET %d\n",memory.watchdog);
+                    printf("WATCHDOG RESET %d SRAM=%02x %02x %02x %02x %02x %02x %02x %02x PC=%06x\n",memory.watchdog,
+                        memory.sram[0], memory.sram[1], memory.sram[2], memory.sram[3],
+                        memory.sram[4], memory.sram[5], memory.sram[6], memory.sram[7],
+                        cpu_68k_getpc());
 					cpu_68k_reset();
 					memory.watchdog = 0;
                 }

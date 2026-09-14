@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -271,8 +272,7 @@ int init_mslug3(GAME_ROMS *r) {
 	neogeo_fix_bank_type = 1;
 	memory.bksw_offset = bankoffset_mslug3;
 	memory.bksw_unscramble = scramblecode_mslug3;
-	//memory.sma_rng_addr=0xF8FA;
-	memory.sma_rng_addr = 0;
+	memory.sma_rng_addr = 0;    /* MAME leaves the PRN ports unmapped for mslug3 */
 
 	//mslug3_install_protection(r);
 	return 0;
@@ -1245,6 +1245,28 @@ static int setup_sprite_streaming(const char *ctile_path, Uint32 tile_size) {
 	}
 	printf("Sprite cache opened via FATFS: %s (FIL in internal RAM, %u bytes)\n",
 		   fatfs_path, (unsigned)sizeof(FIL));
+
+	/* Fingerprint the cache: CRC32 of the first 64KB distinguishes cache
+	 * generations (e.g. CMC42-decrypted vs plain) without dumping MBs. */
+	{
+		Uint8 fp_buf[1024];
+		Uint32 crc = 0;
+		Uint32 left = 65536, total_read = 0;
+		f_lseek(fil, 0);
+		while (left) {
+			UINT br = 0;
+			UINT chunk = left < sizeof(fp_buf) ? left : sizeof(fp_buf);
+			if (f_read(fil, fp_buf, chunk, &br) != FR_OK || br == 0)
+				break;
+			crc = esp_rom_crc32_le(crc, fp_buf, br);
+			total_read += br;
+			left -= br;
+		}
+		f_lseek(fil, 0);
+		printf("CTILE FINGERPRINT: crc32=%08X first=%uKB filesize=%u\n",
+			   (unsigned)crc, (unsigned)(total_read / 1024),
+			   (unsigned)fil->obj.objsize);
+	}
 
 	/* --- Build LBA sector map by walking the FAT chain directly ---
 	 * FATFS f_lseek has a subtle bug: at cluster boundaries, fp->clust
@@ -2451,6 +2473,8 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 				fread(r->spr_usage.p, 1, usage_size, uf);
 				fclose(uf);
 				printf("Loaded spr_usage from %s\n", cusage_path);
+				printf("SPR_USAGE FINGERPRINT: crc32=%08X\n",
+					   (unsigned)esp_rom_crc32_le(0, r->spr_usage.p, 4096));
 			} else {
 				/* cusage is only a persistence of the usage table (which we
 				 * just zeroed in RAM); the .ctile itself is still valid, so

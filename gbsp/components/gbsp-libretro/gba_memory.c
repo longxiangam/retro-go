@@ -19,6 +19,8 @@
 
 #include "common.h"
 #include "streams/file_stream.h"
+#include <strings.h>
+#include <miniz.h>
 
 /* Sound */
 #define gbc_sound_tone_control_low(channel, regn)                             \
@@ -349,6 +351,7 @@ dma_transfer_type dma[4];
 // ROMs up to 32MB, but we might fail on memory constrained systems.
 
 u8 *gamepak_buffers[32];    /* Pointers to malloc'ed blocks */
+static u8 *gamepak_buffer_base = NULL; /* Non-NULL when buffers form one contiguous region */
 u32 gamepak_buffer_count;   /* Value between 1 and 32 */
 u32 gamepak_size;           /* Size of the ROM in bytes */
 // We allocate in 1MB chunks.
@@ -2215,14 +2218,28 @@ u8 *load_gamepak_page(u32 physical_index)
 void init_gamepak_buffer(void)
 {
   unsigned i;
-  // Try to allocate up to 32 blocks of 1MB each
+  // Prefer ONE contiguous region: zip decompression writes linearly into
+  // it, so LZ back-references always resolve within adjacent memory.
   gamepak_buffer_count = 0;
-  while (gamepak_buffer_count < ROM_BUFFER_SIZE)
+  gamepak_buffer_base = NULL;
+  u8 *base = (u8*)malloc(ROM_BUFFER_SIZE * 1024 * 1024);
+  if (base)
   {
-    void *ptr = malloc(gamepak_buffer_blocksize);
-    if (!ptr)
-      break;
-    gamepak_buffers[gamepak_buffer_count++] = (u8*)ptr;
+    gamepak_buffer_base = base;
+    for (i = 0; i < ROM_BUFFER_SIZE; i++)
+      gamepak_buffers[i] = base + i * gamepak_buffer_blocksize;
+    gamepak_buffer_count = ROM_BUFFER_SIZE;
+  }
+  else
+  {
+    // Fallback: scattered 1MB blocks (raw .gba loading still works)
+    while (gamepak_buffer_count < ROM_BUFFER_SIZE)
+    {
+      void *ptr = malloc(gamepak_buffer_blocksize);
+      if (!ptr)
+        break;
+      gamepak_buffers[gamepak_buffer_count++] = (u8*)ptr;
+    }
   }
 
   // Initialize the memory map structure
@@ -2314,9 +2331,19 @@ void memory_term(void)
     gamepak_file_large = NULL;
   }
 
-  while (gamepak_buffer_count)
+  if (gamepak_buffer_base)
   {
-    free(gamepak_buffers[--gamepak_buffer_count]);
+    // Buffers are views into one contiguous region: free it once.
+    free(gamepak_buffer_base);
+    gamepak_buffer_base = NULL;
+    gamepak_buffer_count = 0;
+  }
+  else
+  {
+    while (gamepak_buffer_count)
+    {
+      free(gamepak_buffers[--gamepak_buffer_count]);
+    }
   }
 }
 
@@ -2543,12 +2570,224 @@ static s32 load_gamepak_raw(const char *name)
   return -1;
 }
 
+/* Load a GBA ROM from a ZIP file: locate the .gba entry, then
+ * stream-decompress it directly into the contiguous gamepak buffer
+ * (LZ back-references resolve within adjacent memory).  The caller
+ * (load_gamepak) handles all post-load setup.  Returns 0 on success. */
+static s32 gba_zip_load_gamepak(const char *zip_path)
+{
+   FILE *fp = fopen(zip_path, "rb");
+   if (!fp)
+      return -1;
+
+   /* locate EOCD */
+   fseek(fp, 0, SEEK_END);
+   long fsize = ftell(fp);
+   long scan_from = (fsize > 0x10000 + 22) ? fsize - (0x10000 + 22) : 0;
+   long eocd = -1;
+   for (long p = fsize - 22; p >= scan_from; p--)
+   {
+      u8 sig[4];
+      fseek(fp, p, SEEK_SET);
+      if (fread(sig, 1, 4, fp) != 4) break;
+      if (sig[0] == 'P' && sig[1] == 'K' && sig[2] == 0x05 && sig[3] == 0x06)
+      { eocd = p; break; }
+   }
+   if (eocd < 0) { printf("ZIP: no EOCD\n"); fclose(fp); return -1; }
+
+   u16 entry_count;
+   u32 cd_offset;
+   fseek(fp, eocd + 10, SEEK_SET);
+   fread(&entry_count, 1, 2, fp);
+   fseek(fp, eocd + 16, SEEK_SET);
+   fread(&cd_offset, 1, 4, fp);
+
+   /* scan central directory for the .gba entry */
+   int pick = -1;
+   u32 pick_method = 0, pick_comp = 0, pick_uncomp = 0, pick_local = 0;
+   fseek(fp, cd_offset, SEEK_SET);
+   for (u16 e = 0; e < entry_count; e++)
+   {
+      u8 cd[46];
+      if (fread(cd, 1, 46, fp) != 46) break;
+      if (memcmp(cd, "PK\001\002", 4) != 0) break;
+      u16 method, nlen, elen, clen;
+      u32 csize, usize, loff;
+      memcpy(&method, cd + 10, 2);
+      memcpy(&csize,  cd + 20, 4);
+      memcpy(&usize,  cd + 24, 4);
+      memcpy(&nlen,   cd + 28, 2);
+      memcpy(&elen,   cd + 30, 2);
+      memcpy(&clen,   cd + 32, 2);
+      memcpy(&loff,   cd + 42, 4);
+      char name[256];
+      u16 keep = nlen < 255 ? nlen : 255;
+      if (keep && fread(name, 1, keep, fp) != keep) break;
+      name[keep] = 0;
+      fseek(fp, elen + clen, SEEK_CUR);
+      if (usize == 0) continue;
+      int is_gba = (keep > 4 && strcasecmp(name + keep - 4, ".gba") == 0);
+      if (pick < 0 || is_gba)
+      {
+         pick = e; pick_method = method; pick_comp = csize;
+         pick_uncomp = usize; pick_local = loff;
+      }
+      if (is_gba) break;
+   }
+   if (pick < 0) { printf("ZIP: no ROM entry\n"); fclose(fp); return -1; }
+   if (pick_method != 0 && pick_method != 8)
+   { printf("ZIP: unsupported method %u\n", pick_method); fclose(fp); return -1; }
+   if (!gamepak_buffer_base)
+   { printf("ZIP: gamepak buffers not contiguous\n"); fclose(fp); return -1; }
+   if (pick_uncomp > (u32)gamepak_buffer_count * gamepak_buffer_blocksize)
+   {
+      printf("ZIP: ROM too large (%u > %u) - convert to .gba\n",
+             pick_uncomp, gamepak_buffer_count * gamepak_buffer_blocksize);
+      fclose(fp);
+      return -1;
+   }
+
+   /* read the local header to find the data offset */
+   fseek(fp, pick_local, SEEK_SET);
+   u8 lh[30];
+   if (fread(lh, 1, 30, fp) != 30) { fclose(fp); return -1; }
+   u16 l_nlen, l_elen;
+   memcpy(&l_nlen, lh + 26, 2);
+   memcpy(&l_elen, lh + 28, 2);
+   long data_off = pick_local + 30 + l_nlen + l_elen;
+
+   /* Stream-decompress from the file into the contiguous gamepak buffer.
+    * Output is non-wrapping with dict = buffer base, so the 32KB LZ
+    * window always resolves inside this same region. */
+   u8 *dict = gamepak_buffer_base;
+   u8 *outp  = dict;
+   size_t out_left = pick_uncomp;
+
+   const size_t INBUF = 0x8000;
+   u8 *in_buf = (u8 *)malloc(INBUF);
+   tinfl_decompressor *decomp = (tinfl_decompressor *)malloc(sizeof(tinfl_decompressor));
+   if (!in_buf || !decomp)
+   { printf("ZIP: alloc failed\n"); free(in_buf); free(decomp); fclose(fp); return -1; }
+   tinfl_init(decomp);
+
+   fseek(fp, data_off, SEEK_SET);
+   size_t in_avail = 0;
+   int in_eof = 0;
+   tinfl_status status = TINFL_STATUS_NEEDS_MORE_INPUT;
+
+   for (;;)
+   {
+      if (!in_eof && in_avail < INBUF)
+      {
+         size_t n = fread(in_buf + in_avail, 1, INBUF - in_avail, fp);
+         in_avail += n;
+         if (n == 0) in_eof = 1;
+      }
+      size_t in_bytes  = in_avail;
+      size_t out_bytes = out_left;
+      status = tinfl_decompress(decomp, in_buf, &in_bytes, dict, outp, &out_bytes,
+                                TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF |
+                                (in_eof ? 0 : TINFL_FLAG_HAS_MORE_INPUT));
+      in_avail -= in_bytes;
+      if (in_avail) memmove(in_buf, in_buf + in_bytes, in_avail);
+      outp += out_bytes;
+      out_left -= out_bytes;
+
+      if (status <= TINFL_STATUS_DONE)   /* DONE or any failure */
+         break;
+      if (status == TINFL_STATUS_HAS_MORE_OUTPUT)
+         break;                          /* output capacity reached */
+      if (in_eof && status == TINFL_STATUS_NEEDS_MORE_INPUT)
+         break;                          /* input exhausted */
+   }
+
+   free(decomp);
+   free(in_buf);
+   fclose(fp);
+
+   if (status != TINFL_STATUS_DONE || out_left != 0)
+   {
+      printf("ZIP: decompress failed (status %d, got %u of %u)\n",
+             (int)status, (unsigned)(pick_uncomp - out_left), pick_uncomp);
+      return -1;
+   }
+
+   /* Map the decompressed ROM pages (same layout as load_gamepak_raw) */
+   gamepak_size = (pick_uncomp + 0x7FFF) & ~0x7FFF;
+   gamepak_file_large = NULL;
+   u32 buf_blocks = (gamepak_size + gamepak_buffer_blocksize - 1) / gamepak_buffer_blocksize;
+   u32 rom_blocks = gamepak_size >> 15;
+   u32 ldblks = buf_blocks < (u32)gamepak_buffer_count ? buf_blocks : (u32)gamepak_buffer_count;
+
+   map_null(read, 0x8000000, 0xD000000);
+   for (u32 i = 0; i < ldblks; i++)
+   {
+      for (u32 j = 0; j < 32 && i*32 + j < rom_blocks; j++)
+      {
+         u32 phyn = i*32 + j;
+         u8 *blkptr = &gamepak_buffers[i][32 * 1024 * j];
+         u32 entry = evict_gamepak_page();
+         gamepak_blk_queue[entry].phy_rom = phyn;
+         map_rom_entry(read, phyn, blkptr, rom_blocks);
+      }
+   }
+
+   printf("ZIP: loaded %u bytes (compressed %u) into gamepak buffers\n",
+          pick_uncomp, pick_comp);
+   return 0;
+}
+
 u32 load_gamepak(const struct retro_game_info* info, const char *name,
                  int force_rtc, int force_rumble, int force_serial)
 {
    gamepak_info_t gpinfo;
 
-   if (load_gamepak_raw(name))
+   if (info && info->data && info->size)
+   {
+      /* Load the ROM from the in-memory buffer (extracted from a zip).
+       * Fill the gamepak buffers sequentially, then map the pages.
+       * For ROMs larger than the buffer capacity, only the first
+       * `gamepak_buffer_count` MB are loaded (the rest is inaccessible
+       * without SD paging, which requires a file-based ROM). */
+      u32 rom_size = ((u32)info->size + 0x7FFF) & ~0x7FFF;
+      u32 rom_blocks = rom_size >> 15;
+      u32 ldblks = rom_size / gamepak_buffer_blocksize;
+      if (ldblks > gamepak_buffer_count)
+         ldblks = gamepak_buffer_count;
+
+      map_null(read, 0x8000000, 0xD000000);
+
+      for (u32 bi = 0; bi < ldblks; bi++)
+      {
+         u32 off = bi * gamepak_buffer_blocksize;
+         u32 chunk = gamepak_buffer_blocksize;
+         if (off + chunk > rom_size)
+         {
+            chunk = rom_size - off;
+            memset(gamepak_buffers[bi] + chunk, 0xFF,
+                   gamepak_buffer_blocksize - chunk);
+         }
+         memcpy(gamepak_buffers[bi], (const u8 *)info->data + off, chunk);
+
+         for (u32 j = 0; j < 32 && bi*32 + j < rom_blocks; j++)
+         {
+            u32 phyn = bi*32 + j;
+            u8 *blkptr = &gamepak_buffers[bi][32 * 1024 * j];
+            u32 entry = evict_gamepak_page();
+            gamepak_blk_queue[entry].phy_rom = phyn;
+            map_rom_entry(read, phyn, blkptr, rom_blocks);
+         }
+      }
+
+      gamepak_file_large = NULL;
+   }
+   else if (name && strlen(name) > 4 &&
+            strcasecmp(name + strlen(name) - 4, ".zip") == 0)
+   {
+      if (gba_zip_load_gamepak(name))
+         return -1;
+   }
+   else if (load_gamepak_raw(name))
       return -1;
 
    // Buffer 0 always has the first 1MB chunk of the ROM

@@ -195,6 +195,32 @@ int gpsp_load_rom(const char *rom_path)
     return 0;
 }
 
+/* Load a ROM image already held in RAM (extracted from a zip by the caller
+ * BEFORE gpsp_init() claimed the gamepak buffers). */
+int gpsp_load_rom_mem(const void *rom_data, size_t rom_size)
+{
+    extern u8 open_gba_bios_rom[];
+    extern u8 bios_rom[];
+    memcpy(bios_rom, open_gba_bios_rom, 16 * 1024);
+
+    memset(gamepak_backup, 0xFF, sizeof(gamepak_backup));
+
+    struct retro_game_info info;
+    memset(&info, 0, sizeof(info));
+    info.data = rom_data;
+    info.size = rom_size;
+
+    ESP_LOGI(TAG, "Loading gamepak (from memory, %u bytes)", (unsigned)rom_size);
+    if (load_gamepak(&info, "memory", FEAT_AUTODETECT, FEAT_DISABLE, SERIAL_MODE_AUTO) != 0) {
+        ESP_LOGE(TAG, "Failed to load ROM from memory");
+        return -1;
+    }
+
+    ESP_LOGI(TAG, "Gamepak loaded from memory, calling reset_gba()");
+    reset_gba();
+    return 0;
+}
+
 uint16_t *gpsp_run_frame(void)
 {
     /* update_input writes button state to IO register */
