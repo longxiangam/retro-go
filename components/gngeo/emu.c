@@ -457,6 +457,14 @@ static inline int update_scanline(void) {
 
 static int slow_motion = 0;
 int total_frames = 0;
+int neogeo_resume_pending = 0;
+int neogeo_resume_slot = 0;
+
+void neogeo_deferred_resume(int slot)
+{
+	neogeo_resume_slot = slot;
+	neogeo_resume_pending = 1;
+}
 
 void neogeo_main_loop(void) {
 	int neo_emu_done = 0;
@@ -506,6 +514,19 @@ void neogeo_main_loop(void) {
 	//pause_audio(0);
 	total_frames = 0;
 	while (!neo_emu_done) {
+		/* DIAG deferred resume: load the state at frame 600 */
+		{
+			extern int neogeo_resume_pending;
+			extern int neogeo_resume_slot;
+			extern bool rg_emu_load_state(uint8_t slot);
+			if (neogeo_resume_pending && total_frames >= 600 && memory.current_vector == 1)
+			{
+				neogeo_resume_pending = 0;
+				printf("DEFERRED RESUME loading at frame %u\n", total_frames);
+				rg_emu_load_state((uint8_t)neogeo_resume_slot);
+			}
+		}
+
 		/* FPS measurement */
 		fps_frame_count++;
 		total_frames++;

@@ -887,6 +887,22 @@ static DRIVER_INIT(lans2004) {
 
 #endif
 
+/* kof2003: NEO-PVC + PCM2(PLAYMORE) + CMC50.  P1/P2/P3 + m1 encrypted,
+ * V ROM PCM2-swapped (pre-swapped in the streaming .vroma), C ROMs CMC50. */
+int init_kof2003(GAME_ROMS *r) {
+	printf("INIT KOF2003\n");
+	if (need_decrypt) {
+		kof2003_decrypt_68k(r);               /* P1/P2/P3 32-bit swap decrypt */
+		neo_pcm2_swap(r, 5);                  /* ADPCM swap: no-op when streaming (vroma pre-swapped) */
+		neogeo_cmc50_m1_decrypt(r);           /* encrypted m1 (loaded to RAM, decrypt runs here) */
+		kof2000_neogeo_gfx_decrypt(r, 0x9d);  /* C ROM CMC50: no-op when streaming */
+	}
+	neogeo_fix_bank_type = 2;
+	neogeo_pvc_protection = 1;                /* install the NEO-PVC handlers */
+	return 0;
+}
+
+
 struct roms_init_func {
 	char *name;
 	int (*init)(GAME_ROMS * r);
@@ -926,6 +942,8 @@ struct roms_init_func {
 	{ "mslug5", init_mslug5},
 	{ "ms5pcb", init_ms5pcb},
 	{ "ms5plus", init_ms5plus},
+	{ "kof2003", init_kof2003},
+	{ "kof2003n", init_kof2003},
 	{ NULL, NULL}
 };
 
@@ -2530,8 +2548,7 @@ int dr_load_roms(GAME_ROMS *r, char *rom_path, char *name) {
 		r->adpcmb.size = r->adpcma.size;
 		/* If ADPCM-A is streaming, B should alias the same cache */
 		if (streaming_adpcma && !streaming_adpcmb) {
-			adpcm_cacheB = adpcm_cacheA;
-			adpcm_cacheB.file = NULL; /* don't double-close */
+			adpcm_cacheB = adpcm_cacheA;  /* shares cacheA's FILE* */
 			streaming_adpcmb = 1;
 		}
 	}
@@ -3006,13 +3023,11 @@ void dr_free_roms(GAME_ROMS *r) {
 	free_region(&r->cpu_z80);
 	free_region(&r->bios_audio);
 
-	/* Free ADPCM caches if streaming */
-	if (adpcm_cacheA.active) {
+	/* Free ADPCM caches if streaming (B shares A's FILE*: deactivate only) */
+	if (adpcm_cacheB.active)
+		adpcm_cacheB.active = 0;
+	if (adpcm_cacheA.active)
 		adpcm_cache_free(&adpcm_cacheA);
-	}
-	if (adpcm_cacheB.active) {
-		adpcm_cache_free(&adpcm_cacheB);
-	}
 
 	if (r->adpcmb.p && r->adpcmb.p != r->adpcma.p)
 		free_region(&r->adpcmb);

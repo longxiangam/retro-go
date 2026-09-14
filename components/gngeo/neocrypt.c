@@ -1506,7 +1506,12 @@ void kof2003_decrypt_68k(running_machine *machine)
 	int ofst;
 	int rom_size = 0x900000;
 	UINT8 *rom = memory_region( machine, "maincpu" );
-	UINT8 *buf = alloc_array_or_die(UINT8,  rom_size );
+	UINT8 *buf = malloc( rom_size );
+
+	if (!buf) {
+		printf("KOF2003 decrypt skipped (cannot allocate %d MB)\n", rom_size >> 20);
+		return;
+	}
 
 	for (i = 0; i < 0x100000; i++)
 	{

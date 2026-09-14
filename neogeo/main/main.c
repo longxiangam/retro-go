@@ -21,7 +21,11 @@
 #include "roms.h"
 #include "screen.h"
 #include "conf.h"
+#include <zlib.h>
 #include "state.h"
+
+static void load_backup_ram(void);
+static void save_backup_ram(void);
 
 /* Platform helpers implemented in esp32_platform.c (the rg_* adapter) */
 extern void esp32_init_conf(const char *game_name);
@@ -53,22 +57,111 @@ static bool screenshot_handler(const char *filename, int width, int height)
 
 static bool save_state_handler(const char *filename)
 {
-    /* gngeo's save_state embeds a screenshot + full state. It uses its own
-     * path scheme (ROOTPATH/save/<game>.sta). We call it directly; the slot
-     * maps to retro-go's saveSlot. */
-    if (conf.game && save_state(conf.game, app->saveSlot))
-        return true;
-    return false;
+    /* Write the gngeo-format state directly to the framework's filename.
+     * (gngeo's own save_state() writes to ROOTPATH/save/<game>.NNN which is
+     * not where retro-go expects states.) */
+    gzFile gzf = gzopen(filename, "wb");
+    if (!gzf)
+        return false;
+
+    int flags = state_arch_flags();
+    gzwrite(gzf, "GNGST3", 6);
+    gzwrite(gzf, &flags, sizeof(int));
+    gzwrite(gzf, state_img->pixels, 304 * 224 * 2);
+    neogeo_mkstate(gzf, STWRITE);
+    gzclose(gzf);
+    return true;
 }
 
 static bool load_state_handler(const char *filename)
 {
-    if (conf.game && how_many_slot(conf.game) > 0)
+    /* Save pointers that gngeo's loader restores by re-assignment */
+    Uint8 *ng_lo = memory.ng_lo;
+    Uint8 *fix_game_usage = memory.fix_game_usage;
+    Uint8 *bksw_unscramble = memory.bksw_unscramble;
+    int *bksw_offset = memory.bksw_offset;
+
+    gzFile gzf = gzopen(filename, "rb");
+    if (!gzf)
+        return false;
+
+    char magic[8] = {0};
+    int flags = 0;
+    gzread(gzf, magic, 6);
+    if (strcmp(magic, "GNGST3") != 0 && strcmp(magic, "GNGST2") != 0)
     {
-        if (load_state(conf.game, app->saveSlot))
-            return true;
+        gzclose(gzf);
+        return false;
     }
-    return false;
+    if (strcmp(magic, "GNGST2") == 0)
+        state_version = ST_VER2;
+    if (strcmp(magic, "GNGST3") == 0)
+        state_version = ST_VER3;
+
+    gzread(gzf, &flags, sizeof(int));
+    if (flags != state_arch_flags())
+    {
+        gzclose(gzf);
+        return false;
+    }
+
+    gzread(gzf, state_img_tmp->pixels, 304 * 224 * 2);
+    neogeo_mkstate(gzf, STREAD);
+    gzclose(gzf);
+
+    /* Refresh the Z80 banked windows: neogeo_mkstate restores z80_bank[]
+     * regs but not the mamez80 window copies, which on a RESUME boot still
+     * hold pre-load data.  Without this the sound driver reads the wrong
+     * bank and goes silent. */
+    {
+        extern void cpu_z80_switchbank(unsigned char bank, unsigned short PortNo);
+        extern unsigned short z80_bank[4];
+        for (int b = 0; b < 4; b++)
+            cpu_z80_switchbank((unsigned char)b, z80_bank[b]);
+    }
+
+    {
+        extern int ym_trace_arm;
+        extern int ym_trace_cnt;
+        ym_trace_arm = 1;
+        ym_trace_cnt = 0;
+        printf("YM_TRACE ARMED\n");
+    }
+
+    /* Restore the pointers gngeo's loader preserves */
+    memory.ng_lo = ng_lo;
+    memory.fix_game_usage = fix_game_usage;
+    memory.bksw_unscramble = bksw_unscramble;
+    memory.bksw_offset = bksw_offset;
+    cpu_68k_bankswitch(bankaddress);
+
+    if (memory.current_vector == 0)
+        memcpy(memory.rom.cpu_m68k.p, memory.rom.bios_m68k.p, 0x80);
+    else
+        memcpy(memory.rom.cpu_m68k.p, memory.game_vector, 0x80);
+
+    if (memory.vid.currentpal)
+    {
+        current_pal = memory.vid.pal_neo[1];
+        current_pc_pal = (Uint32 *)memory.vid.pal_host[1];
+    }
+    else
+    {
+        current_pal = memory.vid.pal_neo[0];
+        current_pc_pal = (Uint32 *)memory.vid.pal_host[0];
+    }
+
+    if (memory.vid.currentfix)
+    {
+        current_fix = memory.rom.game_sfix.p;
+        fix_usage = memory.fix_game_usage;
+    }
+    else
+    {
+        current_fix = memory.rom.bios_sfix.p;
+        fix_usage = memory.fix_board_usage;
+    }
+    return true;
 }
 
 static bool reset_handler(bool hard)
@@ -103,6 +196,33 @@ static void options_handler(rg_gui_option_t *dest)
 {
     *dest++ = (rg_gui_option_t){0, _("Raster effects"), "-", RG_DIALOG_FLAG_NORMAL, &raster_callback};
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
+}
+
+/* ── Backup RAM (SRAM) persistence ── */
+
+static void load_backup_ram(void)
+{
+    char *path = rg_emu_get_path(RG_PATH_SAVE_SRAM, app->romPath);
+    size_t len = 0x10000;
+    void *buf = NULL;
+    if (rg_storage_read_file(path, &buf, &len, 0) && buf)
+    {
+        if (len > 0x10000) len = 0x10000;
+        memcpy(memory.sram, buf, len);
+        free(buf);
+        RG_LOGI("Backup RAM loaded (%u bytes)", (unsigned)len);
+    }
+    free(path);
+}
+
+static void save_backup_ram(void)
+{
+    char *path = rg_emu_get_path(RG_PATH_SAVE_SRAM, app->romPath);
+    if (rg_storage_write_file(path, memory.sram, 0x10000, 0))
+        RG_LOGI("Backup RAM saved");
+    else
+        RG_LOGE("Backup RAM save FAILED");
+    free(path);
 }
 
 /* ── Entry point ── */
@@ -165,12 +285,21 @@ void app_main(void)
             (unsigned)(memory.rom.adpcma.size / 1024),
             (unsigned)(memory.rom.cpu_z80.size / 1024));
 
+    load_backup_ram();
+
+    /* DIAG: defer the resume load until 10s into the run (frame 600) to
+     * match path-A timing; neogeo_main_loop triggers it via the flag. */
     if (app->bootFlags & RG_BOOT_RESUME)
-        rg_emu_load_state(app->saveSlot);
+    {
+        extern void neogeo_deferred_resume(int slot);
+        neogeo_deferred_resume(app->saveSlot);
+    }
 
     rg_system_set_tick_rate(60);
 
     neogeo_main_loop();
+
+    save_backup_ram();
 
     screen_close();
     rg_system_shutdown();
