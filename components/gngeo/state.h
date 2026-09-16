@@ -82,6 +82,9 @@ typedef struct NEOGEO_STATE {
 #endif
 
 extern SDL_Surface *state_img;
+extern SDL_Surface *state_img_tmp;
+void neogeo_mkstate(gzFile gzf, int mode);
+int state_arch_flags(void);
 
 #define STREAD  0
 #define STWRITE 1

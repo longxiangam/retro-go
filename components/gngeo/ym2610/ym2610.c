@@ -2181,9 +2181,9 @@ static void OPNB_ADPCMA_write(int r, int v) {
 					adpcma[c].adpcma_out = 0;
 					adpcma[c].flag = 1;
 
-					if (pcmbufA == NULL) {
-						/* Check ROM Mapped */
-//						logerror("YM2610: ADPCM-A rom not mapped\n");
+					if (pcmbufA == NULL && !adpcm_cacheA.active) {
+						/* Check ROM Mapped (NULL is OK when the SD cache
+						 * backs the V-ROM in streaming mode) */
 						adpcma[c].flag = 0;
 					} else {
 						if (adpcma[c].end >= pcmsizeA) {
@@ -2710,12 +2710,21 @@ void YM2610Reset(void) {
 /* YM2610 write */
 /* a = address */
 /* v = value   */
+int ym_trace_arm = 0;
+int ym_trace_cnt = 0;
+
 int YM2610Write(int a, u8 v) {
 	FM_OPN *OPN = &YM2610.OPN;
 	int addr;
 	int ch;
 
 	v &= 0xff; /* adjust to 8 bit bus */
+
+	if (ym_trace_arm && ym_trace_cnt < 800) {
+		ym_trace_cnt++;
+		printf("YM_W %d a=%d A1=%d st=%02x v=%02x\n",
+		       ym_trace_cnt, a, YM2610.addr_A1, YM2610.OPN.ST.address, v);
+	}
 
 	switch (a & 3) {
 	case 0: /* address port 0 */

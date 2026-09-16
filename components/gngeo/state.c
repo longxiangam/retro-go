@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "zlib.h"
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "memory.h"
 #include "state.h"
@@ -39,6 +41,8 @@ static int z80_flag=0xC;
 static int endian_flag=0x10;
 #else
 static int endian_flag=0x0;
+
+int state_arch_flags(void) { return m68k_flag | z80_flag | endian_flag; }
 #endif
 
 #if defined (WII)
@@ -187,6 +191,9 @@ static gzFile open_state(char *game,int slot,int mode) {
     st_name=(char*)alloca(strlen(gngeo_dir)+strlen(game)+5);
     sprintf(st_name,"%s%s.%03d",gngeo_dir,game,slot);
 
+    if (mode == STWRITE)
+        mkdir(gngeo_dir, 0775);   /* create the save dir if missing (ignore EEXIST) */
+
 	if ((gzf = gzopen(st_name, m)) == NULL) {
 		printf("%s not found\n", st_name);
 		return NULL;
@@ -243,7 +250,7 @@ SDL_Surface *load_state_img(char *game,int slot) {
     return state_img_tmp;
 }
 
-static void neogeo_mkstate(gzFile gzf,int mode) {
+void neogeo_mkstate(gzFile gzf,int mode) {
 	GAME_ROMS r;
 	memcpy(&r,&memory.rom,sizeof(GAME_ROMS));
 	mkstate_data(gzf, &memory, sizeof (memory), mode);

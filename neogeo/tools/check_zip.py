@@ -46,24 +46,34 @@ def main():
         members.setdefault(os.path.splitext(n.lower())[0], n)
 
     ok = True
+    # Build CRC → member index (CRC is the true identifier, names don't matter)
+    crc_map = {}
+    for n in zf.namelist():
+        data = zf.read(n)
+        c = zlib.crc32(data) & 0xffffffff
+        crc_map[c] = (n, data, len(data))
+
     for fn, size, crc in roms:
-        base = os.path.splitext(fn.lower())[0]
-        member = members.get(base)
-        if member is None:
-            if base.startswith('sfix'):
-                print(f"  OPTIONAL {fn:22s} (BIOS 公共文件, 生成不需要)")
-                continue
-            print(f"  MISSING  {fn:22s} (需要 {size} 字节)")
-            ok = False
+        if base.startswith('sfix') if (base := os.path.splitext(fn.lower())[0]) else False:
+            print(f"  OPTIONAL {fn:22s} (BIOS 公共文件)")
             continue
-        data = zf.read(member)
-        gcrc = zlib.crc32(data) & 0xffffffff
-        gsize = len(data)
-        if gcrc == crc and gsize == size:
-            print(f"  OK       {fn:22s} crc={crc:08X}")
+        if crc in crc_map:
+            n, data, dlen = crc_map[crc]
+            print(f"  OK       {fn:22s} (zip内: {os.path.basename(n)})")
+        elif crc in crc_map or any(crc == (zlib.crc32(zf.read(n)) & 0xffffffff) for n in zf.namelist() if os.path.splitext(n.lower())[0] == base):
+            pass  # already handled above
         else:
-            print(f"  BAD      {fn:22s} 期望 crc={crc:08X}/size={size}, 实际 crc={gcrc:08X}/size={gsize}")
-            ok = False
+            # try to find by CRC in the whole zip
+            found = False
+            for n in zf.namelist():
+                data = zf.read(n)
+                if (zlib.crc32(data) & 0xffffffff) == crc:
+                    print(f"  OK*      {fn:22s} (CRC匹配: {os.path.basename(n)})")
+                    found = True
+                    break
+            if not found:
+                print(f"  MISSING  {fn:22s} (需要 CRC={crc:08X} size={size})")
+                ok = False
 
     print(("=" * 40))
     if ok:
