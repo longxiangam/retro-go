@@ -1033,17 +1033,17 @@ static void free_region(ROM_REGION *r) {
  *                    /sd/roms/neogeo/<game>.vroma   (ADPCM-A samples)
  *                    /sd/roms/neogeo/<game>.vromb   (ADPCM-B samples, if different)
  *
- * Sprite cache budget: 12 MB in PSRAM, bank size 4096 bytes (32 tiles).
+ * Sprite cache budget: 11 MB in PSRAM, bank size 4096 bytes (32 tiles).
  * ADPCM cache budget:  4 MB in PSRAM, page size 4096 bytes.
  */
 
-#define SPRITE_CACHE_BUDGET   (12 * 1024 * 1024)
+#define SPRITE_CACHE_BUDGET   (11 * 1024 * 1024)
 #define SPRITE_BANK_SIZE      4096
 #define ADPCM_CACHE_BUDGET    (4 * 1024 * 1024)
 #define CUSAGE_MAGIC          0x43553039  /* "CU09" — unbuffered I/O for read-modify-write */
 
 /* Minimum free PSRAM to keep after all allocations (headroom for stacks, etc.) */
-#define PSRAM_HEADROOM        (8 * 1024 * 1024)
+#define PSRAM_HEADROOM        (4 * 1024 * 1024)
 
 static int streaming_tiles = 0;   /* 1 if sprite tiles are streamed from SD */
 static int streaming_adpcma = 0;  /* 1 if ADPCM-A is streamed from SD */
@@ -1422,8 +1422,10 @@ static int setup_sprite_streaming(const char *ctile_path, Uint32 tile_size) {
 	Uint32 reserve = (streaming_adpcma ? ADPCM_CACHE_BUDGET : 0) + (3 * 1024 * 1024);
 	Uint32 max_sprite_cache = (free_now > reserve) ? (free_now - reserve) : (2 * 1024 * 1024);
 
-	/* Try cache sizes from large to small, limited by max_sprite_cache */
-	Uint32 cache_sizes[] = { 12, 8, 6, 4, 2, 0 };
+	/* Try cache sizes from large to small, limited by max_sprite_cache.
+	 * Capped at 10 MB: save-state PNG encoding needs ~1.2 MB contiguous
+	 * free at save time (mslug2's 12 MB cache starved it to 288 KB). */
+	Uint32 cache_sizes[] = { 10, 8, 6, 4, 2, 0 };
 	for (int i = 0; cache_sizes[i] != 0; i++) {
 		Uint32 cache_bytes = cache_sizes[i] * 1024 * 1024;
 		if (cache_bytes > max_sprite_cache)
@@ -1466,8 +1468,10 @@ static int setup_adpcm_streaming(adpcm_cache_t *cache, const char *vrom_path,
 		return GN_FALSE;
 	}
 
-	/* Try cache sizes from large to small */
-	Uint32 cache_sizes[] = { 4, 2, 1, 0 };
+	/* Try cache sizes from large to small.  3 MB is the balance point:
+	 * the small-windowsize PNG encoder only needs ~350 KB free, so the
+	 * extra megabyte goes to audio coverage (16 MB V ROM games). */
+	Uint32 cache_sizes[] = { 3, 2, 1, 0 };
 	for (int i = 0; cache_sizes[i] != 0; i++) {
 		Uint32 cache_bytes = cache_sizes[i] * 1024 * 1024;
 		if (adpcm_cache_init(cache, f, vrom_size, cache_bytes) == 0) {

@@ -27,6 +27,7 @@ typedef struct adpcm_cache {
     FILE     *file;         /* Backing file on SD card */
     uint32_t  file_size;    /* Total ROM size */
     int       active;       /* 1 = cache is active, 0 = direct PSRAM pointer */
+    int       last_page;    /* Last paged-in page (sequential-stream detection) */
 } adpcm_cache_t;
 
 /* Initialize the ADPCM cache.

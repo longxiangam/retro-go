@@ -20,6 +20,7 @@ int adpcm_cache_init(adpcm_cache_t *c, FILE *file, uint32_t file_size, uint32_t 
 
     for (uint32_t i = 0; i < c->num_slots; i++)
         c->slot_tag[i] = -1;
+    c->last_page = -1;
 
     c->file = file;
     c->file_size = file_size;
@@ -39,22 +40,34 @@ void adpcm_cache_free(adpcm_cache_t *c) {
 
 uint8_t adpcm_cache_miss(adpcm_cache_t *c, uint32_t addr, uint32_t page_num, uint32_t slot) {
     uint32_t page_off = addr & ADPCM_PAGE_MASK;
-    uint32_t file_offset = page_num << ADPCM_PAGE_SHIFT;
 
-    /* Read page from SD */
-    uint32_t read_size = ADPCM_PAGE_SIZE;
-    if (file_offset + read_size > c->file_size)
-        read_size = c->file_size - file_offset;
+    /* Sequential-stream read-ahead: sample playback walks pages in order,
+     * and each SD command's latency (~2.5 ms) dominates over its data size.
+     * Batching 4 pages into one command cuts burst-stall cost ~4x. */
+    int ahead = (c->last_page >= 0 && page_num == (uint32_t)(c->last_page + 1)) ? 4 : 1;
+    c->last_page = (int)page_num;
 
-    uint8_t *dst = c->data + slot * ADPCM_PAGE_SIZE;
+    for (int k = 0; k < ahead; k++) {
+        uint32_t pg = page_num + (uint32_t)k;
+        uint32_t off = pg << ADPCM_PAGE_SHIFT;
+        if (off >= c->file_size)
+            break;
 
-    /* Clear the slot first (handles partial reads at end of file) */
-    if (read_size < ADPCM_PAGE_SIZE)
-        memset(dst, 0, ADPCM_PAGE_SIZE);
+        uint32_t read_size = ADPCM_PAGE_SIZE;
+        if (off + read_size > c->file_size)
+            read_size = c->file_size - off;
 
-    fseek(c->file, file_offset, SEEK_SET);
-    fread(dst, 1, read_size, c->file);
+        uint32_t sl = pg % c->num_slots;
+        uint8_t *dst = c->data + sl * ADPCM_PAGE_SIZE;
 
-    c->slot_tag[slot] = (int)page_num;
-    return dst[page_off];
+        /* Clear the slot first (handles partial reads at end of file) */
+        if (read_size < ADPCM_PAGE_SIZE)
+            memset(dst, 0, ADPCM_PAGE_SIZE);
+
+        fseek(c->file, off, SEEK_SET);
+        fread(dst, 1, read_size, c->file);
+        c->slot_tag[sl] = (int)pg;
+    }
+
+    return c->data[slot * ADPCM_PAGE_SIZE + page_off];
 }

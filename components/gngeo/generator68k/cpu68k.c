@@ -56,7 +56,10 @@ t_ipclist *ipclist[LEN_IPCLISTTABLE];
  * "flush" with no per-entry free() calls.  Eliminates malloc overhead,
  * heap fragmentation, and scattered PSRAM accesses.
  * ──────────────────────────────────────────────────────────────────── */
-#define IPC_POOL_MAX   (3584 * 1024)  /* 3.5 MB — ideal size */
+#define IPC_POOL_MAX   (3584 * 1024)  /* 3.5 MB — mslug3 hot set is ~3.1 MB;
+                                         a too-small pool all-flushes and
+                                         thrashes (re-translate everything
+                                         every second = frame skip storm) */
 #define IPC_POOL_MIN   (1024 * 1024)  /* 1 MB — minimum usable */
 static uint8 *ipc_pool      = NULL;   /* base of the pool                */
 static uint32 ipc_pool_used = 0;      /* bump pointer (bytes used so far) */
@@ -388,29 +391,29 @@ t_ipclist *cpu68k_makeipclist(uint32 pc)
   int i;
 
   /* Lazy init: allocate pool on first use */
-  if (ipc_pool == NULL) {
-    /* Try ideal size first, fall back to largest available block */
-    uint32 try_size = IPC_POOL_MAX;
-    ipc_pool = heap_caps_malloc(try_size, MALLOC_CAP_SPIRAM);
     if (ipc_pool == NULL) {
-      try_size = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-      if (try_size > IPC_POOL_MAX) try_size = IPC_POOL_MAX;
-      /* Leave a small margin for other allocations */
-      if (try_size > 64 * 1024) try_size -= 64 * 1024;
-      if (try_size < IPC_POOL_MIN) {
-        printf("FATAL: not enough PSRAM for IPC pool (largest=%u, min=%d)\n", try_size, IPC_POOL_MIN);
-        exit(1);
-      }
+      /* Try ideal size first, then shrink progressively.  Never hard-fail
+       * while any usable block remains: a fatal here would reset the
+       * whole device (e.g. after a pool release around menu sessions). */
+      uint32 try_size = IPC_POOL_MAX;
       ipc_pool = heap_caps_malloc(try_size, MALLOC_CAP_SPIRAM);
       if (ipc_pool == NULL) {
-        printf("FATAL: cannot allocate IPC pool (%u bytes)\n", try_size);
-        exit(1);
+        try_size = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+        if (try_size > IPC_POOL_MAX) try_size = IPC_POOL_MAX;
+        while (try_size >= 256 * 1024 && ipc_pool == NULL) {
+          ipc_pool = heap_caps_malloc(try_size, MALLOC_CAP_SPIRAM);
+          if (ipc_pool == NULL) try_size -= 64 * 1024;
+        }
+        if (ipc_pool == NULL) {
+          printf("FATAL: not enough PSRAM for IPC pool (largest=%u)\n",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+          exit(1);
+        }
       }
+      ipc_pool_size = try_size;
+      ipc_pool_used = 0;
+      printf("IPC pool: %uK allocated\n", ipc_pool_size / 1024);
     }
-    ipc_pool_size = try_size;
-    ipc_pool_used = 0;
-    printf("IPC pool: %uK allocated\n", ipc_pool_size / 1024);
-  }
 
   list = ipc_pool_alloc(alloc_size);
   if (list == NULL) {
@@ -530,6 +533,22 @@ void cpu68k_clearcache(void)
 #ifdef ESP32_PLATFORM
 uint32_t ipc_pool_used_bytes(void) { return ipc_pool_used; }
 uint32_t ipc_pool_total_bytes(void) { return ipc_pool_size; }
+
+/* Release the whole IPC pool back to the heap (e.g. before memory-hungry
+ * operations like save-state PNG encoding).  Without this the pool's
+ * fallback sizing keeps PSRAM drained to ~64 KB and large transient
+ * allocations fail.  The pool is lazily re-created on the next
+ * cpu68k_makeipclist() call. */
+void cpu68k_release_ipc_pool(void)
+{
+  cpu68k_clearcache();
+  if (ipc_pool) {
+    free(ipc_pool);
+    ipc_pool = NULL;
+  }
+  ipc_pool_used = 0;
+  ipc_pool_size = 0;
+}
 #endif
 
 void cpu68k_reset(void)
