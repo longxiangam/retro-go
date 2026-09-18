@@ -323,6 +323,8 @@ bool rg_surface_save_image_file(const rg_surface_t *source, const char *filename
     CHECK_SURFACE(source, false);
 
     rg_surface_t *temp = NULL;
+    unsigned char *out = NULL;
+    size_t outsize = 0;
     int error = -1;
 
     if (width <= 0 && height <= 0)
@@ -340,12 +342,27 @@ bool rg_surface_save_image_file(const rg_surface_t *source, const char *filename
         source = temp;
     }
 
-    error = lodepng_encode24_file(filename, source->data + source->offset, width, height);
+    /* Small deflate windowsize: the workspace scales with it, and the
+     * default 32 KB window needs ~500 KB contiguous — more than tight
+     * games have free at save time. 4096 needs ~64 KB. Lossless either
+     * way; files are just slightly larger. */
+    LodePNGState st;
+    lodepng_state_init(&st);
+    st.info_raw.colortype = LCT_RGB;
+    st.info_png.color.colortype = LCT_RGB;
+    st.encoder.zlibsettings.windowsize = 4096;
+    error = lodepng_encode(&out, &outsize, source->data + source->offset, width, height, &st);
+    lodepng_state_cleanup(&st);
     rg_surface_free(temp);
+    if (!error)
+    {
+        lodepng_save_file(out, outsize, filename);
+    }
+    else
+    {
+        RG_LOGE("PNG encoding failed: %u\n", error);
+    }
 
-    if (error == 0)
-        return true;
-
-    RG_LOGE("PNG encoding failed: %d\n", error);
-    return false;
+    free(out);
+    return error == 0;
 }

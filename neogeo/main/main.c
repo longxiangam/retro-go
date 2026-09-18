@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "emu.h"
 #include "memory.h"
@@ -50,9 +51,13 @@ static char rom_dir[256];
 static bool screenshot_handler(const char *filename, int width, int height)
 {
     rg_surface_t *surf = neogeo_get_display_surface();
-    if (surf)
-        return rg_surface_save_image_file(surf, filename, width, height);
-    return false;
+    if (!surf)
+        return false;
+    /* Cap at 240 px: the RGB888 convert buffer + PNG output must fit the
+     * largest free block, which is ~350 KB with the caches balanced. */
+    if (width > 240)
+        width = 240;
+    return rg_surface_save_image_file(surf, filename, width, height);
 }
 
 static bool save_state_handler(const char *filename)
@@ -120,13 +125,7 @@ static bool load_state_handler(const char *filename)
             cpu_z80_switchbank((unsigned char)b, z80_bank[b]);
     }
 
-    {
-        extern int ym_trace_arm;
-        extern int ym_trace_cnt;
-        ym_trace_arm = 1;
-        ym_trace_cnt = 0;
-        printf("YM_TRACE ARMED\n");
-    }
+
 
     /* Restore the pointers gngeo's loader preserves */
     memory.ng_lo = ng_lo;
@@ -192,9 +191,21 @@ static rg_gui_event_t raster_callback(rg_gui_option_t *option, rg_gui_event_t ev
     return RG_DIALOG_VOID;
 }
 
+static rg_gui_event_t fps_callback(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    strcpy(option->value, conf.show_fps ? _("On") : _("Off"));
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        conf.show_fps = !conf.show_fps;
+        strcpy(option->value, conf.show_fps ? _("On") : _("Off"));
+    }
+    return RG_DIALOG_VOID;
+}
+
 static void options_handler(rg_gui_option_t *dest)
 {
     *dest++ = (rg_gui_option_t){0, _("Raster effects"), "-", RG_DIALOG_FLAG_NORMAL, &raster_callback};
+    *dest++ = (rg_gui_option_t){0, _("Show FPS"), "-", RG_DIALOG_FLAG_NORMAL, &fps_callback};
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 

@@ -545,10 +545,15 @@ void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resampl
     if (img && resample && (width && height) && (width != img->width || height != img->height))
     {
         rg_image_t *new_img = rg_surface_resize(img, width, height);
-        rg_gui_copy_buffer(x_pos, y_pos, width, height, new_img->width * 2, new_img->data, true);
-        rg_surface_free(new_img);
+        if (new_img)
+        {
+            rg_gui_copy_buffer(x_pos, y_pos, width, height, new_img->width * 2, new_img->data, true);
+            rg_surface_free(new_img);
+            return;
+        }
+        /* Resize alloc failed (tight memory) — draw unscaled instead of crashing */
     }
-    else if (img)
+    if (img)
     {
         int draw_width = width ? RG_MIN(width, img->width) : img->width;
         int draw_height = height ? RG_MIN(height, img->height) : img->height;
