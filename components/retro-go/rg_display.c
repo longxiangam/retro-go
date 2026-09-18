@@ -256,7 +256,12 @@ static inline void write_update_ppa(const rg_surface_t *update)
     //RG_LOGI("write_update_ppa: src_width: %d, src_height: %d, screen_width: %d, screen_height: %d, viewport_width: %d, viewport_height: %d, viewport_left: %d, viewport_top: %d, draw_left: %d, draw_top: %d, draw_width: %d, draw_height: %d, filter_x: %d, filter_y: %d", src_width, src_height, screen_width, screen_height, viewport_width, viewport_height, viewport_left, viewport_top, draw_left, draw_top, draw_width, draw_height, filter_x, filter_y);
     // 格式转换：转换为 RGB565 LE 格式
     if(format & RG_PIXEL_PALETTE){
-        transfer_buf = heap_caps_aligned_calloc(32, in_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        transfer_buf = heap_caps_aligned_calloc(64, 1, in_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        if (!transfer_buf)
+        {
+            RG_LOGE("transfer buf alloc failed (%u bytes), skipping frame", (unsigned)in_size);
+            return;
+        }
         for(int i = 0; i < src_height; i++){   
             for(int j = 0; j < src_width; j++){
                 uint16_t pixel = palette[((uint8_t*)data)[i * stride + j]];
@@ -268,7 +273,12 @@ static inline void write_update_ppa(const rg_surface_t *update)
             }
         }
     }else if(format == RG_PIXEL_565_BE){
-        transfer_buf = heap_caps_aligned_calloc(32, in_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        transfer_buf = heap_caps_aligned_calloc(64, 1, in_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        if (!transfer_buf)
+        {
+            RG_LOGE("transfer buf alloc failed (%u bytes), skipping frame", (unsigned)in_size);
+            return;
+        }
         for (int i = 0; i < pixel_count; i++) {
             transfer_buf[i] = (((uint16_t*)data)[i] << 8) | (((uint16_t*)data)[i] >> 8);
         }
@@ -665,7 +675,8 @@ bool rg_display_sync(bool block)
 void rg_display_write_rect_ppa(int left, int top, int width, int height, int stride, const uint16_t *buffer, uint32_t flags)
 {
     RG_ASSERT_ARG(buffer);
-    size_t out_size = ALIGN_UP(width * height, 32) * 2;
+    // PPA SRM 要求 out.buffer 按 cache line (64B) 对齐且 buffer_size 为 64 的倍数
+    size_t out_size = ALIGN_UP((size_t)width * height * 2, 64);
     
    
     //RG_LOGI("rg_display_write_rect: left: %d, top: %d, width: %d, height: %d, stride: %d", left, top, width, height, stride);
@@ -680,7 +691,12 @@ void rg_display_write_rect_ppa(int left, int top, int width, int height, int str
     }
 
     
-    uint16_t *out_buf = heap_caps_aligned_calloc(32, out_size, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    uint16_t *out_buf = heap_caps_aligned_calloc(64, 1, out_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    if (!out_buf)
+    {
+        RG_LOGE("PPA out buffer alloc failed (%u bytes), skipping rect update", (unsigned)out_size);
+        return;
+    }
     s_srm_ops(buffer,out_buf,out_size, width,height);
         
     buffer = out_buf;

@@ -355,7 +355,9 @@ static void s_srm_ops(void *in_buf, void *out_buf, size_t buf_size,int width,int
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
 
-    ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
+    esp_err_t err = ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config);
+    if (err != ESP_OK)
+        RG_LOGE("PPA SRM op failed: 0x%x", err);
 }
 
 // FIT 模式：保持宽高比 + 90度旋转，适应屏幕（可能有黑边）
@@ -393,7 +395,9 @@ static void s_srm_ops_fit(void *in_buf, void *out_buf, size_t buf_size,
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
 
-    ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
+    esp_err_t err = ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config);
+    if (err != ESP_OK)
+        RG_LOGE("PPA SRM fit failed: 0x%x", err);
 }
 
 // FULL 模式：填满整个屏幕 + 90度旋转（可能拉伸）
@@ -428,7 +432,9 @@ static void s_srm_ops_full(void *in_buf, void *out_buf, size_t buf_size,
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
 
-    ESP_ERROR_CHECK(ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config));
+    esp_err_t err = ppa_do_scale_rotate_mirror(ppa_srm_handle, &srm_config);
+    if (err != ESP_OK)
+        RG_LOGE("PPA SRM full failed: 0x%x", err);
 }
 
 static inline uint16_t *lcd_get_buffer(size_t length)
