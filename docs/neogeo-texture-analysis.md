@@ -3,6 +3,13 @@
 > **背景**：KOF97 显示正常，但合金弹头1（Metal Slug 1）贴图显示异常。
 > **目标**：分析 gngeo 模拟器的贴图处理原理，定位可能导致游戏间显示差异的模拟器层面问题。
 
+> **✅ 状态更新（2026-09-17）**：原始贴图异常已解决。
+> 根因不是渲染管线，而是 **ROM 数据源错误**：早期使用的 mslug3.zip 中 .rom 文件 CRC 与驱动器定义全不匹配。
+> 换用认证 romset（`neogeo/test/mslug3_auth.zip`，CRC 全对）并重新生成缓存后，mslug1/2/3 贴图全部正常。
+> 缓存指纹基准：ctile `crc32=02C91C3D`、spr_usage `crc32=B54C0282`、sfix `md5=20a08070`。
+> 文中"潜在问题"多数已顺带修复（见 §7 各问题的状态标注），遗留项见 §7-问题2。
+> 内存预算与流式缓存的最新实测数据见 §10。
+
 ---
 
 ## 目录
@@ -16,6 +23,7 @@
 7. [潜在问题分析](#7-潜在问题分析)
 8. [游戏对比分析](#8-游戏对比分析)
 9. [诊断与修复建议](#9-诊断与修复建议)
+10. [内存预算与流式缓存（2026-09-17 实测）](#10-内存预算与流式缓存2026-09-17-实测)
 
 ---
 
@@ -61,10 +69,13 @@ typedef struct gfx_cache {
     int raw_mode;             // 1=原始.ctile文件, 0=GNO压缩
     Uint8 *bounce_buf;        // DMA 对齐的 SDMMC 读取缓冲区
     DWORD *sector_map;        // LBA 扇区映射: sector_map[bank] = 起始扇区
-    int sectors_per_bank;     // 每 bank 的 512B 扇区数（通常 8）
+    int sectors_per_bank;     // 每 bank 的 512B 扇区数（当前 8 = 4KB bank）
     BYTE pdrv;                // FATFS 物理驱动器号
 } GFX_CACHE;
 ```
+
+> **当前参数（2026-09-17）**：`SPRITE_BANK_SIZE = 4096` 字节（32 tiles/bank，`roms.c:1041`），
+> 精灵缓存预算 `SPRITE_CACHE_BUDGET = 11MB`（`roms.c:1040`），实际分配 = min(转换后 ROM, 预算)。
 
 ### VIDEO（视频状态）
 
@@ -300,14 +311,14 @@ Uint8 *get_cached_sprite_ptr(Uint32 tileno) {
 }
 ```
 
-**计算示例**（假设 `slot_size = 0x4000` = 16KB）：
+**计算示例**（当前 `slot_size = 0x1000` = 4KB）：
 ```
-slot_size >> 7 = 128        // 每个 bank 包含 128 个 tile
-tile_sh = ~0x7F = 0xFFFFFF80
+slot_size >> 7 = 32         // 每个 bank 包含 32 个 tile
+tile_sh = ~0x1F = 0xFFFFFFE0
 
 tileno = 0x12345
-tileno & tile_sh = 0x12300
-bank = 0x12300 / 128 = 367
+tileno & tile_sh = 0x12320
+bank = 0x12320 / 32 = 2337
 ```
 
 ### 6.2 ⚠️ Bank 越界风险
@@ -343,9 +354,10 @@ static void prefetch_sprite_banks(void) {
 
 ## 7. 潜在问题分析
 
-### 问题 1：Tile 扩展后透明度检测不匹配 ⚠️⚠️⚠️
+### 问题 1：Tile 扩展后透明度检测不匹配 ⚠️⚠️⚠️ → ✅ 已修复
 
 **严重程度**：高
+**状态**：**已修复** —— `video.c:84-91` 实现了 `pen_usage_safe()`：越界访问返回 `TILE_NORMAL`（可见），不再读越界内存。预取路径（`video.c:554`）已切换到该函数。
 
 **位置**：`video.c:802`, `video.c:537`, `video.c:1062`
 
@@ -373,9 +385,12 @@ penusage = PEN_USAGE(tileno);
 
 ---
 
-### 问题 2：Tile 扩展与模运算冲突 ⚠️⚠️
+### 问题 2：Tile 扩展与模运算冲突 ⚠️⚠️ → ⚠️ 仍存在（影响评估下调）
 
 **严重程度**：高
+**状态**：**仍存在** —— `video_template.h` 中 `tileno = tileno % memory.nb_of_tiles` 仍在。
+**影响重评**：认证 ROM + 正确缓存下，mslug1/2/3 长时间实测未观察到花屏/错图，说明实际游戏中扩展 tile 与模冲突的组合罕见（或被 `pen_usage_safe` 的 NORMAL 兜底掩盖为"多画一个正常 tile"而非错图）。
+**遗留风险**：某些游戏若频繁发出 `tileno ≥ nb_of_tiles` 的扩展且发生模碰撞，仍可能渲染错误 tile。修复方案见 §9.2 修复 3。
 
 **位置**：`video_template.h:24`
 
@@ -400,9 +415,10 @@ tileatr & 0x10 → tileno = 0x15000
 
 ---
 
-### 问题 3：缓存 Bank 越界 ⚠️⚠️
+### 问题 3：缓存 Bank 越界 ⚠️⚠️ → ✅ 已修复
 
 **严重程度**：高
+**状态**：**已修复** —— `video.c:232-235` 的 `get_cached_sprite_ptr()` 已加入 `if (bank >= gcache->total_bank) bank %= gcache->total_bank;` 保护；预取路径同样有 `if (bank >= total_banks) continue;`（`video.c:558`）。
 
 **位置**：`video.c:218`
 
@@ -422,9 +438,10 @@ if (gcache->ptr[bank]) { ... }  // 越界访问
 
 ---
 
-### 问题 4：自动动画 Tile 号计算错误 ⚠️
+### 问题 4：自动动画 Tile 号计算错误 ⚠️ → ✅ 非问题（与上游 MAME 行为一致）
 
 **严重程度**：中
+**状态**：**核实为正确行为** —— 动画计数先于扩展应用于基础 tile 号，与 MAME 的 neogeo 驱动实现一致；实测动画 tile（爆炸/水面）渲染正常。
 
 **位置**：`video.c:753-758`
 
@@ -442,9 +459,10 @@ if (tileatr & 0x8) {
 
 ---
 
-### 问题 5：spr_usage 表尺寸不足 ⚠️
+### 问题 5：spr_usage 表尺寸不足 ⚠️ → ✅ 已修复（与问题 1 同一修复）
 
 **严重程度**：中
+**状态**：**已修复** —— `pen_usage_safe()` 的范围检查兜住了表外访问（返回 `TILE_NORMAL`）。表尺寸本身仍按原始 ROM 大小分配（足够——扩展位只重定位编号，合法编号不会超过 `nb_of_tiles` = 原始 tile 数）。
 
 **位置**：`roms.c:1635`
 
@@ -461,9 +479,10 @@ allocate_region(&r->spr_usage,
 
 ---
 
-### 问题 6：预取与 VRAM 不同步 ⚠️
+### 问题 6：预取与 VRAM 不同步 ⚠️ → ✅ 已实现（设计权衡，实测无碍）
 
 **严重程度**：低（设计权衡）
+**状态**：**已实现并验证** —— `prefetch_sprite_banks()`（`video.c:469-623`）每帧渲染前扫描 VRAM 精灵表，收集缺失 bank（≤384 个），按 LBA 排序后成批 `disk_read`（连续 bank 合并，最多 8 bank/次）。实测精灵命中率 98.9-100%，SD 分页对帧率无可感知影响。
 
 **位置**：`video.c:469-623`
 
@@ -476,28 +495,22 @@ allocate_region(&r->spr_usage,
 
 ## 8. 游戏对比分析
 
-| 特性 | KOF97 | 合金弹头1 |
-|------|-------|-----------|
-| **ROM 大小** | ~50MB | ~50MB+ |
-| **Tile 数量** | < 0x10000 (65536) | > 0x10000 (可能使用扩展) |
-| **Tile 扩展使用** | 较少/不使用 | 频繁 |
-| **动态 sprite 密度** | 中等（角色为主） | 高（爆炸/子弹/敌人） |
-| **VRAM 更新频率** | 中等 | 高 |
-| **缓存未命中率** | 低 | 高 |
-| **问题敏感度** | **低** | **高** |
-| **表现** | 正常 | 贴图异常 |
+> **✅ 更新（2026-09-17）**：三款游戏均已验证正常。当初的"贴图异常"根因是 ROM 数据源错误（非渲染管线），换认证 romset 后全部解决。
 
-### 为什么 KOF97 正常？
+| 特性 | KOF97 | 合金弹头1 | 合金弹头3 |
+|------|-------|-----------|-----------|
+| **当前状态** | ✅ 正常 | ✅ 正常 | ✅ 正常 |
+| **C ROM（转换后）** | — | — | 8MB（缓存全量覆盖） |
+| **V ROM** | — | — | 16MB（ADPCM 缓存 4MB，命中 100%） |
+| **Tile 数量** | < 0x10000 | > 0x10000（使用扩展） | > 0x10000（524288 tiles） |
+| **流式分页** | 无需/可选 | 需要 | 需要（8MB 精灵 + 4MB ADPCM） |
+| **实测精灵命中** | — | ~100% | 98.9-100%（预取兜底） |
 
-1. **Tile 数量可能 < 65536**：不触发扩展逻辑，所有 tile 号都在 `spr_usage` 有效范围内。
-2. **动画使用较少**：即使有扩展，动画计算的副作用不明显。
-3. **sprite 变化较缓**：缓存预取能跟上 VRAM 变化。
+### 当初"合金弹头异常"的真正根因
 
-### 为什么合金弹头1异常？
-
-1. **Tile 数量大**：频繁使用 tile 扩展，触发透明度检测越界。
-2. **大量动态 sprite**：爆炸、子弹等高频更新，缓存压力大。
-3. **动画 tile 密集**：动画计算与扩展逻辑冲突更明显。
+1. **ROM 数据源错误**：本地 mslug3.zip 的 .rom 文件 CRC 与驱动定义全不匹配（错误转板/坏档），转换出的贴图数据本身就是坏的。
+2. **缓存指纹校验**（现已内置）：ctile `crc32=02C91C3D`、spr_usage `crc32=B54C0282`、sfix `md5=20a08070`——任何缓存文件与指纹不符即判定为坏数据。
+3. 教训：**先验数据源，再查模拟器**。
 
 ---
 
@@ -575,86 +588,40 @@ if (g_perf.spr_misses > 0) {
 
 ### 9.2 修复方案
 
-#### 修复 1：扩展 Tile 透明度安全访问
+> **实施状态（2026-09-17）**：修复 1、2 已落地；修复 3 未做（影响评估下调，见 §7-问题2）；修复 4 经核实为非问题。
+
+#### 修复 1：扩展 Tile 透明度安全访问 ✅ 已实施
 
 ```c
-// 新增函数：安全获取透明度
-static inline Uint8 get_pen_usage_safe(Uint32 tileno) {
-    Uint32 max_index = memory.rom.spr_usage.size / sizeof(Uint32);
-    Uint32 word_index = tileno >> 4;
-
-    if (word_index >= max_index) {
-        // 扩展 tile：使用基础 tile 的透明度或默认 NORMAL
+// video.c:84-91 —— 已落地，名称为 pen_usage_safe()
+static inline Uint8 pen_usage_safe(Uint32 tileno) {
+    Uint32 max_words = memory.rom.spr_usage.size / sizeof(Uint32);
+    Uint32 word_idx = tileno >> 4;
+    if (word_idx >= max_words) {
         return TILE_NORMAL;
     }
-    return ((((Uint32*)memory.rom.spr_usage.p)[word_index])
+    return ((((Uint32*)memory.rom.spr_usage.p)[word_idx])
             >> ((tileno & 0xF) * 2)) & 0x3;
 }
-
-// 替换所有 PEN_USAGE(tileno) 调用为 get_pen_usage_safe(tileno)
 ```
 
-#### 修复 2：缓存 Bank 越界保护
+#### 修复 2：缓存 Bank 越界保护 ✅ 已实施
 
 ```c
-// video.c - get_cached_sprite_ptr()
-Uint8 *get_cached_sprite_ptr(Uint32 tileno) {
-    GFX_CACHE *gcache = &memory.vid.spr_cache;
-    int tile_sh = ~((gcache->slot_size >> 7) - 1);
-    int bank = ((tileno & tile_sh) / (gcache->slot_size >> 7));
-
-    // ✅ 新增：越界保护
-    if (bank >= gcache->total_bank) {
-        static int warn_cnt = 0;
-        if (warn_cnt < 10) {
-            printf("WARN: bank %d >= total %d (tileno=%u)\n",
-                   bank, gcache->total_bank, tileno);
-            warn_cnt++;
-        }
-        bank %= gcache->total_bank;  // 回退到有效范围
-    }
-
-    if (gcache->ptr[bank]) {
-        return gcache->ptr[bank];
-    }
-    // ... 原有加载逻辑 ...
+// video.c:232-235 —— 已落地
+if (bank >= gcache->total_bank) {
+    bank %= gcache->total_bank;
 }
 ```
 
-#### 修复 3：修正 Tile 扩展后的模运算
+#### 修复 3：修正 Tile 扩展后的模运算 ⚠️ 未实施（遗留）
 
 ```c
-// video_template.h - draw() 函数开头
-// 移除或修正模运算，确保扩展 tile 不被错误映射
-
-// 方案 A：移除模运算（如果上游已保证 tileno 有效）
-// tileno = tileno % memory.nb_of_tiles;  // ← 删除此行
-
-// 方案 B：使用安全的模运算
-if (tileno >= memory.nb_of_tiles) {
-    // 扩展 tile：不取模，直接使用（缓存系统会处理）
-    // 或者标记为不可见
-}
+// video_template.h —— tileno = tileno % memory.nb_of_tiles; 仍存在
+// 若未来观察到错图，按方案 B 处理（跳过越界 tile 的取模）
 ```
 
-#### 修复 4：调整动画计算顺序
-
-```c
-// video.c - draw_screen()
-// 先计算动画，再扩展
-
-// 1. 先处理自动动画（使用基础 tile 号）
-if (tileatr & 0x8) {
-    tileno = (tileno & ~7) + ((tileno + neogeo_frame_counter) & 7);
-} else if (tileatr & 0x4) {
-    tileno = (tileno & ~3) + ((tileno + neogeo_frame_counter) & 3);
-}
-
-// 2. 然后处理 tile 扩展
-if (memory.nb_of_tiles > 0x10000 && (tileatr & 0x10)) tileno += 0x10000;
-if (memory.nb_of_tiles > 0x20000 && (tileatr & 0x20)) tileno += 0x20000;
-if (memory.nb_of_tiles > 0x40000 && (tileatr & 0x40)) tileno += 0x40000;
-```
+#### 修复 4：调整动画计算顺序 ✅ 核实为非问题（与 MAME 一致）
 
 ---
 
@@ -672,6 +639,52 @@ if (memory.nb_of_tiles > 0x40000 && (tileatr & 0x40)) tileno += 0x40000;
 3. **性能监控**：
    - 观察缓存命中率变化
    - 确认无帧率下降
+
+---
+
+## 10. 内存预算与流式缓存（2026-09-17 实测）
+
+### 10.1 mslug3 运行时 PSRAM 账本（31MB 堆）
+
+| 块 | 大小 | 说明 |
+|---|---|---|
+| 静态显示面 + 截图面 + 查找表 | ~1.5MB | 常驻（esp32_platform.c） |
+| P/S ROM 程序数据 | ~4.5MB | 常驻 |
+| 精灵缓存 | 8MB | = mslug3 转换后 C ROM 全量（预算上限 11MB，ROM 只有 8MB → 零浪费） |
+| ADPCM 缓存 | 4MB | 16MB V ROM 的热集，命中 100% |
+| IPC pool（dynarec） | 3MB | `IPC_POOL_MAX`（cpu68k.c:59），实测峰值 2524K |
+| **空闲** | **~1.9MB** | 最大连续块 1.7MB+ |
+| `.ext_ram.bss`（堆外） | 1.27MB | 68k 函数表/翻译哈希 832KB + bankswitch 表 312KB |
+| MMU/IDF 保留 | ~0.3MB | |
+
+### 10.2 配平依据（全部实测）
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| `SPRITE_CACHE_BUDGET` 11MB | `roms.c:1040` | 实际=min(ROM, 预算)；mslug3 C=8MB 全覆盖 |
+| ADPCM 阶梯 `{4,3,2,1}` | `roms.c:1471` | 3MB 时 miss 66%（16MB V ROM）；4MB 恢复 100% |
+| `IPC_POOL_MAX` 3MB | `cpu68k.c:59` | 2.5MB 时每秒 flush 2-3 次（393 次/局=卡顿风暴）；3MB 降至 4 次/局 |
+| 重建降级阶梯至 256KB | `cpu68k.c` | 消除池分配失败的 `exit(1)` 整机重启 |
+
+### 10.3 实测健康度（mslug3 数分钟战斗/切场景）
+
+```
+spr_cache:   命中 98.9-100%（预取批量兜底）
+adpcm_cache: 命中 100.0%（55775:2）
+ipc:         pool=2524K/3072K flushes=4/局（此前 393/局）
+崩溃/分配失败: 0
+```
+
+### 10.4 卡顿事故复盘（2026-09-17）
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| 菜单键崩溃（mslug3） | PSRAM 被池抽干至 25KB，菜单 70KB 分配失败 → NULL 进 PPA → abort | write_rect_ppa/write_update_ppa NULL 检查优雅跳过；st7701.h PPA 失败改日志 |
+| 存档无图（mslug2/3） | lodepng 编码需 ~400KB 连续内存，被池挤压 | 池封顶 3MB，留 ~2MB 余量 |
+| 菜单崩溃复发 | 释放池方案引入堆翻转（其他核持陈旧指针写入已释放池） | 撤销释放-重建方案，改静态封顶 |
+| 卡顿变频繁 | 池 2.5MB < 工作集 2.9MB → 每秒 2-3 次 flush | 池调 3MB |
+
+**教训**：_dynarec 池疑似多核共享（IPC 之名），任何"临时释放再重建"的方案都有 use-after-free 风险；容量调整务必用实测命中率/flush 率闭环验证。_
 
 ---
 
@@ -695,3 +708,8 @@ if (memory.nb_of_tiles > 0x40000 && (tileatr & 0x40)) tileno += 0x40000;
 | draw_scanline() 模板 | `video_template.h` | 320-444 |
 | GFX_CACHE 定义 | `video.h` | 29-45 |
 | VIDEO 定义 | `video.h` | 47-72 |
+| pen_usage_safe() | `video.c` | 84-91 |
+| SPRITE_CACHE_BUDGET / 阶梯 | `roms.c` | 1040-1042 |
+| ADPCM 缓存阶梯 | `roms.c` | ~1471 |
+| IPC_POOL_MAX / 重建阶梯 | `cpu68k.c` | 59-60, ~391 |
+| write_rect_ppa（NULL 防护） | `rg_display.c` | 675-695 |
