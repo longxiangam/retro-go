@@ -18,6 +18,7 @@ typedef enum
     RG_DISPLAY_FILTER_HORIZ,
     RG_DISPLAY_FILTER_VERT,
     RG_DISPLAY_FILTER_BOTH,
+    RG_DISPLAY_FILTER_PPA,      /* P4: PPA hardware scaling (else software scale + PPA rotate) */
     RG_DISPLAY_FILTER_COUNT,
 } display_filter_t;
 
@@ -107,6 +108,7 @@ void rg_display_clear_except(int left, int top, int width, int height, uint16_t 
 void rg_display_clear(uint16_t color_le);
 bool rg_display_sync(bool block);
 void rg_display_force_redraw(void);
+void rg_display_refresh(void);
 void rg_display_submit(const rg_surface_t *update, uint32_t flags);
 
 rg_display_counters_t rg_display_get_counters(void);

@@ -1516,6 +1516,8 @@ static rg_gui_event_t filter_update_cb(rg_gui_option_t *option, rg_gui_event_t e
         strcpy(option->value, _("Vert"));
     if (mode == RG_DISPLAY_FILTER_BOTH)
         strcpy(option->value, _("Both"));
+    if (mode == RG_DISPLAY_FILTER_PPA)
+        strcpy(option->value, _("PPA"));
 
     return RG_DIALOG_VOID;
 }

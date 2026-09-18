@@ -8,6 +8,7 @@
 #define ALIGN_UP(num, align)    (((num) + ((align) - 1)) & ~((align) - 1))
 // static rg_display_driver_t driver;
 static rg_task_t *display_task_queue;
+static const rg_surface_t *display_last_surface;
 static rg_display_counters_t counters;
 static rg_display_config_t config;
 // static rg_surface_t *osd;
@@ -300,6 +301,48 @@ static inline void write_update_ppa(const rg_surface_t *update)
     float scale_x = (float)(viewport_width) / src_width;
     float scale_y = (float)(viewport_height) / src_height; 
     float scale = 1.0f;
+
+    /* Software-scale mode (any filter except PPA): nearest-neighbor keeps
+     * the pixel grid crisp, then PPA rotates each strip 1:1 into the
+     * framebuffer (strips keep the staging buffer ~150 KB). */
+    if (config.filter != RG_DISPLAY_FILTER_PPA)
+    {
+        const int strip_h = 118; /* dest rows per strip */
+        uint16_t *staging = malloc(viewport_width * strip_h * 2 + 64);
+        if (staging)
+        {
+            const uint16_t *src_px = transfer_buf;
+            int src_stride_px = src_width;
+            if (transfer_buf == (const uint16_t *)data)
+                src_stride_px = stride / 2;
+
+            for (int dest_y0 = 0; dest_y0 < viewport_height; dest_y0 += strip_h)
+            {
+                int rows = RG_MIN(strip_h, viewport_height - dest_y0);
+                for (int r = 0; r < rows; r++)
+                {
+                    int sy = map_viewport_to_source_y[dest_y0 + r];
+                    const uint16_t *srow = (const uint16_t *)(transfer_buf + sy * src_stride_px);
+                    uint16_t *drow = staging + r * viewport_width;
+                    for (int x = 0; x < viewport_width; x++)
+                        drow[x] = srow[map_viewport_to_source_x[x]];
+                }
+                s_srm_ops_fit(staging, out_buf, out_size,
+                              viewport_width, rows, 1.0f,
+                              viewport_top + dest_y0, viewport_left);
+            }
+            free(staging);
+            lcd_send_buffer_ppa(out_buf, out_size, display_left, display_top,
+                                display_left + out_width, display_top + out_height);
+            if (format & RG_PIXEL_PALETTE)
+                free(transfer_buf);
+            else if (format == RG_PIXEL_565_BE)
+                free(transfer_buf);
+            return;
+        }
+        RG_LOGE("SW scale staging alloc failed, using PPA scale");
+    }
+
     // 根据缩放模式调用相应的 PPA 函数
     switch (config.scaling) {
         case RG_DISPLAY_SCALING_OFF:
@@ -435,6 +478,10 @@ static void update_viewport_scaling(void)
     {
         new_width = FLOAT_TO_INT(src_width * config.custom_zoom);
         new_height = FLOAT_TO_INT(src_height * config.custom_zoom);
+        /* Clamp to the screen: PPA block offsets must never go negative
+         * (negative offsets write outside the framebuffer = crash). */
+        if (new_width > screen_width) new_width = screen_width;
+        if (new_height > screen_height) new_height = screen_height;
     }
 
     // Everything works better when we use even dimensions!
@@ -548,6 +595,14 @@ rg_display_counters_t rg_display_get_counters(void)
     return counters;
 }
 
+void rg_display_refresh(void)
+{
+    /* Re-run the last submitted frame so scaling/filter changes show
+     * immediately while a menu blocks the emulator loop. */
+    if (display_last_surface)
+        rg_task_send(display_task_queue, &(rg_task_msg_t){.dataPtr = display_last_surface});
+}
+
 int rg_display_get_width(void)
 {
     // return display.screen.real_width - (display.screen.margins.left + display.screen.margins.right);
@@ -565,6 +620,7 @@ void rg_display_set_scaling(display_scaling_t scaling)
     config.scaling = RG_MIN(RG_MAX(0, scaling), RG_DISPLAY_SCALING_COUNT - 1);
     rg_settings_set_number(NS_APP, SETTING_SCALING, config.scaling);
     display.changed = true;
+    rg_display_refresh();
 }
 
 display_scaling_t rg_display_get_scaling(void)
@@ -574,9 +630,10 @@ display_scaling_t rg_display_get_scaling(void)
 
 void rg_display_set_custom_zoom(double factor)
 {
-    config.custom_zoom = RG_MIN(RG_MAX(0.1, factor), 2.0);
+    config.custom_zoom = RG_MIN(RG_MAX(0.1, factor), 3.0);
     rg_settings_set_number(NS_APP, SETTING_CUSTOM_ZOOM, config.custom_zoom);
     display.changed = true;
+    rg_display_refresh();
 }
 
 double rg_display_get_custom_zoom(void)
@@ -589,6 +646,7 @@ void rg_display_set_filter(display_filter_t filter)
     config.filter = RG_MIN(RG_MAX(0, filter), RG_DISPLAY_FILTER_COUNT - 1);
     rg_settings_set_number(NS_APP, SETTING_FILTER, config.filter);
     display.changed = true;
+    rg_display_refresh();
 }
 
 display_filter_t rg_display_get_filter(void)
@@ -659,6 +717,7 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
         display.changed = true;
     }
 
+    display_last_surface = update;
     rg_task_send(display_task_queue, &(rg_task_msg_t){.dataPtr = update});
 
     counters.blockTime += rg_system_timer() - time_start;
