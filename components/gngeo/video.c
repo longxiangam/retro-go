@@ -225,7 +225,6 @@ static int spr_cache_evict_pos = 0;
 Uint8 *get_cached_sprite_ptr(Uint32 tileno) {
 	GFX_CACHE *gcache = &memory.vid.spr_cache;
 	static int read_errors = 0;
-	static int hi_log = 0;
 	int tile_sh = ~((gcache->slot_size >> 7) - 1);
 
 	int bank = ((tileno & tile_sh) / (gcache->slot_size >> 7));
@@ -292,13 +291,6 @@ Uint8 *get_cached_sprite_ptr(Uint32 tileno) {
 	}
 	gcache->usage[a] = bank;
 
-	if (hi_log < 8 && tileno >= 0x10000) {
-		hi_log++;
-		printf("HI_BANK tileno=%05x bank=%d sect=%ld data=%02x %02x %02x %02x %02x %02x %02x %02x\n",
-			   tileno, bank, (long)gcache->sector_map[bank],
-			   gcache->ptr[bank][0], gcache->ptr[bank][1], gcache->ptr[bank][2], gcache->ptr[bank][3],
-			   gcache->ptr[bank][4], gcache->ptr[bank][5], gcache->ptr[bank][6], gcache->ptr[bank][7]);
-	}
 	return gcache->ptr[bank];
 }
 
@@ -831,14 +823,6 @@ void draw_screen(void) {
 				}
 
 				{
-					static int diag_cnt = 0;
-					if (diag_cnt < 5) {
-						printf("DIAG spr_data=%p slot=%d tileno=%u penusage=%d\n",
-							memory.vid.spr_cache.data,
-							memory.vid.spr_cache.slot_size,
-							tileno, penusage);
-						diag_cnt++;
-					}
 				}
 
 #ifdef PROCESSOR_ARM
@@ -921,8 +905,11 @@ void draw_screen(void) {
 		SDL_textout(buffer, visible_area.x, visible_area.h + visible_area.y - 13, conf.message);
 		conf.do_message--;
 	}
-	if (conf.show_fps)
+	if (conf.show_fps) {
+		static int fps_dbg = 0;
+		if (fps_dbg < 3) { fps_dbg++; printf("FPS_DRAW called show_fps=%d fps_str=[%s]\n", conf.show_fps, fps_str); }
 		SDL_textout(buffer, visible_area.x+8, visible_area.y, fps_str);
+	}
 
 #ifdef ESP32_PLATFORM
 	int64_t t_fix_e = esp_timer_get_time();

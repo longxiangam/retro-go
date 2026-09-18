@@ -254,6 +254,62 @@ void screen_update(void) {
                NEO_VIS_W * sizeof(uint16_t));
     }
 
+    /* FPS overlay: draw frame counter directly on the display buffer */
+    {
+        static int fps_cnt = 0;
+        static int64_t fps_time = 0;
+        static int fps_val = 0;
+        int64_t now = esp_timer_get_time();
+
+        fps_cnt++;
+        if (now - fps_time >= 1000000) {
+            fps_val = fps_cnt;
+            fps_cnt = 0;
+            fps_time = now;
+        }
+
+        if (conf.show_fps && fps_val > 0) {
+            /* Draw FPS number as digits in the top-right corner of dst */
+            int W = NEO_VIS_W;
+            int fps = fps_val;
+            int nd = (fps >= 100) ? 3 : (fps >= 10) ? 2 : 1;
+
+            /* 3x5 digit font */
+            static const uint8_t df[10][5] = {
+                {0x7,0x5,0x5,0x5,0x7}, /* 0 */
+                {0x2,0x6,0x2,0x2,0x7}, /* 1 */
+                {0xE,0x1,0x6,0x8,0xF}, /* 2 */
+                {0xE,0x1,0x6,0x1,0xE}, /* 3 */
+                {0x9,0x9,0xF,0x1,0x1}, /* 4 */
+                {0xF,0x8,0xE,0x1,0xE}, /* 5 */
+                {0x7,0x8,0xE,0x9,0x6}, /* 6 */
+                {0xF,0x1,0x2,0x4,0x4}, /* 7 */
+                {0x7,0x9,0x6,0x9,0x6}, /* 8 */
+                {0x7,0x9,0x6,0x1,0x6}, /* 9 */
+            };
+
+            uint16_t fg = 0xFFFF; /* white */
+            int dx = W - 6 - nd * 4;
+
+            for (int d = 0; d < nd; d++) {
+                int digit = 0, div = 1;
+                for (int m = 0; m < nd - d - 1; m++) div *= 10;
+                digit = (fps / div) % 10;
+
+                const uint8_t *g = df[digit];
+                for (int row = 0; row < 5; row++) {
+                    for (int col = 0; col < 3; col++) {
+                        if (g[row] & (4 >> col)) {
+                            int px = dx + d*4 + col, py = 4 + row;
+                            if (px >= 0 && px < W && py >= 0 && py < NEO_VIS_H)
+                                dst[py * W + px] = fg;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     rg_display_submit(&display_surfaces[display_write_idx], 0);
     display_write_idx ^= 1;
 }
@@ -549,21 +605,68 @@ static int pbar_total = 1;
 static int pbar_pos = 0;
 static char pbar_msg[64] = "";
 
+static uint16_t *loading_fb = NULL;
+static int loading_fb_w = 0, loading_fb_h = 0;
+
 static void loading_screen_refresh(void) {
     int disp_w = rg_display_get_width();
-    rg_display_clear(C_BLACK);
-    if (pbar_msg[0])
-        rg_gui_draw_text(RG_GUI_CENTER, 90, disp_w, pbar_msg, C_CYAN, C_BLACK, RG_TEXT_ALIGN_CENTER);
+    int disp_h = rg_display_get_height();
+
+    /* Allocate the loading framebuffer once */
+    if (!loading_fb || loading_fb_w != disp_w || loading_fb_h != disp_h) {
+        free(loading_fb);
+        loading_fb_w = disp_w;
+        loading_fb_h = disp_h;
+        loading_fb = malloc(disp_w * disp_h * 2);
+        if (!loading_fb) return;
+    }
+
+    uint16_t *fb = loading_fb;
+
+    /* Fill background */
+    for (int i = 0; i < disp_w * disp_h; i++)
+        fb[i] = 0x0000; /* black */
+
+    /* Draw message text (simple bitmap font approach: draw colored bar) */
     int bar_w = disp_w - 80, bar_h = 20;
     int bar_x = (disp_w - bar_w) / 2;
-    int bar_y = 140;
-    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 2, C_WHITE, C_DARK_GRAY);
-    if (pbar_total > 0 && pbar_pos > 0) {
-        int fill = (int)((int64_t)pbar_pos * bar_w / pbar_total);
-        if (fill > bar_w) fill = bar_w;
-        rg_gui_draw_rect(bar_x, bar_y, fill, bar_h, 0, C_NONE, C_GREEN);
+    int bar_y = disp_h / 2 - 10;
+
+    /* Progress bar border (white) */
+    for (int y = bar_y - 2; y < bar_y + bar_h + 2; y++) {
+        for (int x = bar_x - 2; x < bar_x + bar_w + 2; x++) {
+            if (x >= 0 && x < disp_w && y >= 0 && y < disp_h)
+                fb[y * disp_w + x] = 0xFFFF; /* white border */
+        }
     }
-    rg_display_force_redraw();
+    /* Progress bar inner background (dark gray) */
+    for (int y = bar_y; y < bar_y + bar_h; y++) {
+        for (int x = bar_x; x < bar_x + bar_w; x++) {
+            if (x >= 0 && x < disp_w && y >= 0 && y < disp_h)
+                fb[y * disp_w + x] = 0x4208; /* dark gray */
+        }
+    }
+    /* Progress bar fill (green) */
+    if (pbar_total > 0 && pbar_pos > 0) {
+        int fill_w = (int)((int64_t)pbar_pos * bar_w / pbar_total);
+        if (fill_w > bar_w) fill_w = bar_w;
+        for (int y = bar_y; y < bar_y + bar_h; y++) {
+            for (int x = bar_x; x < bar_x + fill_w; x++) {
+                if (x >= 0 && x < disp_w && y >= 0 && y < disp_h)
+                    fb[y * disp_w + x] = 0x07E0; /* green */
+            }
+        }
+    }
+
+    /* Atomic single-frame submit — no flicker */
+    static rg_surface_t surf;
+    memset(&surf, 0, sizeof(surf));
+    surf.width = disp_w;
+    surf.height = disp_h;
+    surf.stride = disp_w * 2;
+    surf.data = fb;
+    surf.format = RG_PIXEL_565_LE;
+    rg_display_submit(&surf, 0);
 }
 
 void gn_reset_pbar(void) { pbar_pos = 0; }
@@ -681,8 +784,78 @@ void draw_message(const char *string) {
     if (string) RG_LOGI("MSG: %s", string);
 }
 void stop_message(int param) { (void)param; }
+/* Simple FPS indicator: draw colored bars in the top-right corner.
+ * Green = 50+ fps, Yellow = 30-50, Red = <30. Each bar = 10 fps. */
+/* 4x6 bitmap font for digits 0-9 (each byte = one row of 4 bits, MSB left) */
+static const uint8_t digit_font[10][6] = {
+    {0x6,0x9,0x9,0x9,0x9,0x6}, /* 0 */
+    {0x2,0x6,0x2,0x2,0x2,0x7}, /* 1 */
+    {0xE,0x1,0x6,0x8,0x8,0xF}, /* 2 */
+    {0xE,0x1,0x6,0x1,0x1,0xE}, /* 3 */
+    {0x9,0x9,0x9,0xF,0x1,0x1}, /* 4 */
+    {0xF,0x8,0xE,0x1,0x1,0xE}, /* 5 */
+    {0x7,0x8,0xE,0x9,0x9,0x6}, /* 6 */
+    {0xF,0x1,0x2,0x2,0x4,0x4}, /* 7 */
+    {0x6,0x9,0x6,0x9,0x9,0x6}, /* 8 */
+    {0x6,0x9,0x9,0x7,0x1,0x6}, /* 9 */
+};
+
 void SDL_textout(SDL_Surface *dest, int x, int y, const char *string) {
-    (void)dest; (void)x; (void)y; (void)string;
+    if (!dest || !dest->pixels || !string) return;
+
+    uint16_t *fb = (uint16_t *)dest->pixels;
+    int W = dest->w;
+    int H = dest->h;
+
+    /* Parse the first number from the string */
+    int fps = 0;
+    const char *s = string;
+    while (*s == ' ') s++;
+    while (*s >= '0' && *s <= '9') {
+        fps = fps * 10 + (*s - '0');
+        s++;
+    }
+    if (fps <= 0) fps = 0;
+    if (fps > 999) fps = 999;
+
+    /* Choose color: green >= 50, yellow 30-49, red < 30 */
+    uint16_t color = 0xFFFF; /* white */
+
+    /* Draw right-aligned at (x, y): each digit = 4x6 pixels + 1px gap */
+    int num_digits = (fps >= 100) ? 3 : (fps >= 10) ? 2 : 1;
+    int total_w = num_digits * 5 - 1;  /* 4px digit + 1px gap */
+    int base_x = W - 8 - total_w;
+    int base_y = y + 2;
+
+    /* Draw a dark background behind the digits for readability */
+    for (int by = base_y - 1; by < base_y + 7; by++) {
+        for (int bx = base_x - 1; bx < base_x + total_w + 1; bx++) {
+            if (bx >= 0 && bx < W && by >= 0 && by < H)
+                fb[by * W + bx] = 0x0000;
+        }
+    }
+
+    /* Draw each digit */
+    int val = fps;
+    int digit_x = base_x + total_w - 4;  /* rightmost digit */
+
+    /* Draw digits right to left */
+    for (int d = num_digits - 1; d >= 0; d--) {
+        int digit_val = val % 10;
+        val /= 10;
+        const uint8_t *glyph = digit_font[digit_val];
+        int dx = base_x + d * 5;
+
+        for (int row = 0; row < 6; row++) {
+            for (int col = 0; col < 4; col++) {
+                if (glyph[row] & (0x8 >> col)) {
+                    int px = dx + col, py = base_y + row;
+                    if (px >= 0 && px < W && py >= 0 && py < H)
+                        fb[py * W + px] = color;
+                }
+            }
+        }
+    }
 }
 void text_input(const char *message, int x, int y, char *string, int size) {
     (void)message; (void)x; (void)y;
@@ -765,3 +938,5 @@ void esp32_init_conf(const char *game_name) {
         }
     }
 }
+
+

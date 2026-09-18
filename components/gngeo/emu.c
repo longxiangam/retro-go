@@ -254,135 +254,6 @@ static inline int neo_interrupt(void) {
 		draw_screen();
 		fps_render_count++;
 
-		/* Count non-black pixels in framebuffer */
-		{
-			static int fb_diag = 0;
-			fb_diag++;
-			if (fb_diag % 120 == 0) {
-				uint16_t *px = (uint16_t*)buffer->pixels;
-				int total = buffer->w * buffer->h;
-				int nonblack = 0;
-				for (int pi = 0; pi < total; pi++) {
-					if (px[pi]) nonblack++;
-				}
-				/* Also count non-zero host palette entries */
-				Uint32 *hpal = current_pc_pal;
-				int hnz = 0;
-				for (int pi = 0; pi < 4096; pi++) {
-					if (hpal[pi]) hnz++;
-				}
-				printf("  FB: %d/%d non-black pixels  HOST_PAL: %d/4096 non-zero  backdrop_host=%08X\n",
-				       nonblack, total, hnz, (unsigned)hpal[4095]);
-				if (fb_diag >= 300 && (fb_diag % 1800) == 0) {
-					static int fb_slot = 0;
-					const char *fbnames[3] = {"/sd/roms/neogeo/fbA.bmp", "/sd/roms/neogeo/fbB.bmp", "/sd/roms/neogeo/fbC.bmp"};
-					/* dump framebuffer as 24bpp BMP to SD */
-					const char *bmp_path = fbnames[fb_slot % 3];
-					fb_slot++;
-					FILE *bf = fopen(bmp_path, "wb");
-					if (bf) {
-						int W = buffer->w, H = buffer->h;
-						int rowsz = W * 3;
-						unsigned fsz = 54 + rowsz * H;
-						unsigned char hdr[54] = {0};
-						hdr[0]='B'; hdr[1]='M';
-						hdr[2]=fsz&0xff; hdr[3]=(fsz>>8)&0xff; hdr[4]=(fsz>>16)&0xff; hdr[5]=(fsz>>24)&0xff;
-						hdr[10]=54;
-						hdr[14]=40;
-						hdr[18]=W&0xff; hdr[19]=(W>>8)&0xff;
-						hdr[22]=H&0xff; hdr[23]=(H>>8)&0xff;
-						hdr[26]=1; hdr[28]=24;
-						fwrite(hdr, 1, 54, bf);
-						for (int ry = H - 1; ry >= 0; ry--) {
-							for (int rx = 0; rx < W; rx++) {
-								uint16_t c = px[ry * W + rx];
-								unsigned char bgr[3];
-								bgr[0] = ((c & 0x1F) << 3) | ((c >> 2) & 7);
-								bgr[1] = ((c & 0x7E0) >> 3) | ((c >> 9) & 3);
-								bgr[2] = ((c >> 8) & 0xF8) | ((c >> 13) & 7);
-								fwrite(bgr, 1, 3, bf);
-							}
-						}
-						fclose(bf);
-						printf("FB_DUMP saved %s (%u bytes)\n", bmp_path, fsz);
-					} else {
-						printf("FB_DUMP open failed: %s\n", bmp_path);
-					}
-				}
-				if (fb_diag == 360 || fb_diag == 900 || fb_diag == 1800 || fb_diag == 3600 || fb_diag == 7200 || fb_diag == 14400) {
-					printf("FBPROBE SNAP frame=%d\n", fb_diag);
-					/* one-shot framebuffer probe: row luminance + ASCII view */
-					int W = buffer->w, H = buffer->h;
-					printf("FBPROBE dims=%dx%d\n", W, H);
-					printf("FBPROBE rows:");
-					for (int ry = 0; ry < H; ry++) {
-						Uint32 sum = 0;
-						for (int rx = 0; rx < W; rx++) {
-							uint16_t c = px[ry * W + rx];
-							sum += ((c >> 11) & 0x1F) + ((c >> 5) & 0x3F) + (c & 0x1F);
-						}
-						printf(" %02x", (unsigned)(sum / W));
-					}
-					printf("\n");
-					printf("FBPROBE art 64x28:\n");
-					const char *ramp = " .:-=+*#%@";
-					for (int ay = 0; ay < 28; ay++) {
-						int sy0 = ay * H / 28, sy1 = (ay + 1) * H / 28;
-						for (int ax = 0; ax < 64; ax++) {
-							Uint32 sum = 0; int n = 0;
-							for (int sy = sy0; sy < sy1; sy++) {
-								int sx0 = ax * W / 64, sx1 = (ax + 1) * W / 64;
-								for (int sx = sx0; sx < sx1; sx++) {
-									uint16_t c = px[sy * W + sx];
-									sum += ((c >> 11) & 0x1F) + ((c >> 5) & 0x3F) + (c & 0x1F);
-									n++;
-								}
-							}
-							putchar(ramp[n ? (sum / n) * 9 / 31 : 0]);
-						}
-						putchar('\n');
-					}
-					/* sprite list head: SCB2(y)/SCB3(x,attr) chains */
-					{
-						printf("SCBS: nb_tiles=%06x\n", memory.nb_of_tiles);
-						printf("SCB4:");
-						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x10000 + si*2]));
-						printf("\nSCB2:");
-						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x10400 + si*2]));
-						printf("\nSCB3:");
-						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x10800 + si*2]));
-						printf("\nSTRIP0T:");
-						for (int si = 0; si < 12; si++) printf(" %04x", READ_WORD(&memory.vid.ram[si*2]));
-						printf("\nSTRIP1T:");
-						for (int si = 0; si < 16; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x40 + si*2]));
-						printf("\nSTRIP2T:");
-						for (int si = 0; si < 16; si++) printf(" %04x", READ_WORD(&memory.vid.ram[0x80 + si*2]));
-						printf("\n");
-					}
-					{
-						extern int neogeo_fix_bank_type;
-						extern Uint8 *current_fix;
-						printf("FIXSTATE: bank_type=%d curfix=%s gamefix_size=%u\n",
-						       neogeo_fix_bank_type,
-						       current_fix == memory.rom.game_sfix.p ? "GAME" : "BIOS",
-						       (unsigned)memory.rom.game_sfix.size);
-						printf("FIXTMAP:");
-						for (int fi = 0; fi < 64; fi++)
-							printf(" %04x", READ_WORD(&memory.vid.ram[0xEA00 + fi]));
-						printf("\n");
-					}
-					printf("SPR18:");
-					for (int si = 0; si < 12; si++)
-						printf(" %04x %04x %04x %04x",
-						       READ_WORD(&memory.vid.ram[si * 4 + 0]),
-						       READ_WORD(&memory.vid.ram[si * 4 + 1]),
-						       READ_WORD(&memory.vid.ram[si * 4 + 2]),
-						       READ_WORD(&memory.vid.ram[si * 4 + 3]));
-					printf("\n");
-				}
-			}
-		}
-
 		PROFILER_STOP(PROF_VIDEO);
 	}
     /*
@@ -468,6 +339,9 @@ void neogeo_deferred_resume(int slot)
 
 void neogeo_main_loop(void) {
 	int neo_emu_done = 0;
+	/* Raster-path per-second timing accumulators (ms-granularity profile) */
+	static int64_t rt_cpu_us = 0, rt_scan_us = 0, rt_scr_us = 0;
+	static int rt_frames = 0;
 	int m68k_overclk = CF_VAL(cf_get_item_by_name("68kclock"));
 	int z80_overclk = CF_VAL(cf_get_item_by_name("z80clock"));
 	//int nb_frames = 0;
@@ -539,14 +413,19 @@ void neogeo_main_loop(void) {
 		int64_t now = esp_timer_get_time();
 		if (now - fps_last_time >= 1000000) { /* every 1 second */
 			printf("FPS: %d (rendered: %d, skipped: %d)\n", fps_frame_count, fps_render_count, fps_frame_count - fps_render_count);
+			printf("RT cpu=%dms scan=%dms scr=%dms n=%d\n",
+			       (int)(rt_cpu_us / 1000), (int)(rt_scan_us / 1000),
+			       (int)(rt_scr_us / 1000), rt_frames);
+			rt_cpu_us = rt_scan_us = rt_scr_us = 0;
+			rt_frames = 0;
 #ifdef ESP32_PLATFORM
 			/* Sprite cache stats */
 			uint32_t spr_total = g_perf.spr_hits + g_perf.spr_misses;
 			if (spr_total > 0) {
-				printf("  spr_cache: hits=%u misses=%u (%.1f%%) sd=%lld us prefetch=%lld us\n",
+				printf("  spr_cache: hits=%u misses=%u (%.1f%%) sd=%d us prefetch=%d us\n",
 				       g_perf.spr_hits, g_perf.spr_misses,
 				       100.0f * g_perf.spr_hits / spr_total,
-				       g_perf.spr_sd_us, g_perf.spr_prefetch_us);
+				       (int)g_perf.spr_sd_us, (int)g_perf.spr_prefetch_us);
 			}
 			/* ADPCM cache stats */
 			uint32_t adpcm_total = g_perf.adpcm_hits + g_perf.adpcm_misses;
@@ -567,8 +446,8 @@ void neogeo_main_loop(void) {
 			}
 			/* Frame timing extremes */
 			if (g_perf.frame_min_us < 999999) {
-				printf("  frame: min=%lld us, max=%lld us\n",
-				       g_perf.frame_min_us, g_perf.frame_max_us);
+				printf("  frame: min=%d us, max=%d us\n",
+				       (int)g_perf.frame_min_us, (int)g_perf.frame_max_us);
 			}
 			perf_reset();
 #endif
@@ -896,15 +775,25 @@ void neogeo_main_loop(void) {
 			if (conf.raster) {
 				current_line = 0;
 				for (i = 0; i < 264; i++) {
+					int64_t tc = esp_timer_get_time();
 					tm_cycle = cpu_68k_run(cpu_68k_timeslice_scanline
 							- tm_cycle);
+					rt_cpu_us += esp_timer_get_time() - tc;
+					int64_t ts = esp_timer_get_time();
 					if (update_scanline())
 						cpu_68k_interrupt(2);
+					rt_scan_us += esp_timer_get_time() - ts;
 				}
 				tm_cycle = cpu_68k_run(cpu_68k_timeslice_scanline - tm_cycle);
 				//state_handling(pending_save_state, pending_load_state);
 
-				update_screen();
+				{
+					int64_t ts = esp_timer_get_time();
+					update_screen();
+					rt_scr_us += esp_timer_get_time() - ts;
+					rt_frames++;
+				}
+
 				memory.watchdog++;
 				if (memory.watchdog > 7) {
                     printf("WATCHDOG RESET %d\n", memory.watchdog);
@@ -959,8 +848,10 @@ void neogeo_main_loop(void) {
 					sum_vid += (t_vid_e - t_cpu_e);
 					comp_count++;
 					if (t_vid_e - last_comp > 1000000) {
-						printf("  detail: 68Kcpu=%lld us, video=%lld us (n=%d)\n",
-						       sum_cpu / comp_count, sum_vid / comp_count, comp_count);
+						/* newlib-nano printf lacks %lld — print ints */
+						printf("  detail: 68Kcpu=%d us, video=%d us (n=%d)\n",
+						       (int)(sum_cpu / (comp_count ? comp_count : 1)),
+						       (int)(sum_vid / (comp_count ? comp_count : 1)), comp_count);
 						sum_cpu = 0; sum_vid = 0; comp_count = 0;
 						last_comp = t_vid_e;
 					}
@@ -1001,8 +892,9 @@ void neogeo_main_loop(void) {
 			sum_wait += dtwait;
 			stat_count++;
 			if (tz80_end - last_stat > 1000000) {
-				printf("68K: %lld us/frame, Z80wait: %lld us/frame (n=%d)\n",
-				       sum_68k / stat_count, sum_wait / stat_count, stat_count);
+			printf("68K: %d us/frame, Z80wait: %d us/frame (n=%d)\n",
+			       (int)(sum_68k / (stat_count ? stat_count : 1)),
+			       (int)(sum_wait / (stat_count ? stat_count : 1)), stat_count);
 				sum_68k = 0; sum_wait = 0; stat_count = 0;
 				last_stat = tz80_end;
 			}
