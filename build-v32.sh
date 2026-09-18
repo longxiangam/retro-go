@@ -10,3 +10,4 @@ export IDF_PATH=/home/lx/esp/esp-idf-553
 export IDF_TOOLS_PATH=/home/lx/esp/idf-tools-55
 source /home/lx/esp/export-553.sh > /dev/null 2>&1
 python3 rg_tool.py --target p4-game build $APPS --no-networking
+python3 rg_tool.py --target p4-game build-img $APPS --no-networking
